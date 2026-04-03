@@ -1,0 +1,11 @@
+# Database
+*.db
+*.db-shm
+*.db-wal
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
