@@ -128,6 +128,7 @@ func main() {
 	// SLM ルート
 	api.POST("/slm/suggest/soap", slmHandler.SuggestSOAP)
 	api.POST("/slm/suggest/summary", slmHandler.SuggestSummary)
+	api.POST("/slm/autocomplete", slmHandler.Autocomplete)
 	api.GET("/slm/health", slmHandler.Health)
 
 	// シードエンドポイント（本番環境では無効）

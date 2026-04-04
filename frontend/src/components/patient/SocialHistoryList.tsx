@@ -1,7 +1,10 @@
+import { useState, useCallback } from 'react';
 import type { SocialHistory } from '../../types/api';
+import InlineCompletionTextarea from '../slm/InlineCompletionTextarea';
 
 interface SocialHistoryListProps {
   histories: SocialHistory[];
+  patientId?: number;
 }
 
 const CATEGORY_STYLES: Record<string, { icon: string; color: string }> = {
@@ -11,16 +14,43 @@ const CATEGORY_STYLES: Record<string, { icon: string; color: string }> = {
   '運動': { icon: '🏃', color: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
 };
 
-export default function SocialHistoryList({ histories }: SocialHistoryListProps) {
-  if (histories.length === 0) {
-    return (
-      <p className="text-sm text-gray-400 py-4 text-center">社会歴の記録はありません</p>
-    );
-  }
+export default function SocialHistoryList({ histories, patientId }: SocialHistoryListProps) {
+  const [isAdding, setIsAdding] = useState(false);
+  const [inputText, setInputText] = useState('');
+  const [localHistories, setLocalHistories] = useState<SocialHistory[]>([]);
+
+  const handleSave = useCallback(() => {
+    if (!inputText.trim()) return;
+
+    const newEntry: SocialHistory = {
+      id: Date.now(),
+      patient_id: patientId ?? 0,
+      category: 'その他',
+      description: inputText.trim(),
+      notes: '',
+      is_slm_suggested: true,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    setLocalHistories((prev) => [...prev, newEntry]);
+    setInputText('');
+    setIsAdding(false);
+  }, [inputText, patientId]);
+
+  const handleCancel = useCallback(() => {
+    setInputText('');
+    setIsAdding(false);
+  }, []);
+
+  const allHistories = [...histories, ...localHistories];
 
   return (
     <div className="space-y-3">
-      {histories.map((h) => {
+      {allHistories.length === 0 && !isAdding && (
+        <p className="text-sm text-gray-400 py-4 text-center">社会歴の記録はありません</p>
+      )}
+
+      {allHistories.map((h) => {
         const style = CATEGORY_STYLES[h.category] ?? { icon: '📋', color: 'bg-gray-50 text-gray-700 border-gray-200' };
         return (
           <div
@@ -53,6 +83,44 @@ export default function SocialHistoryList({ histories }: SocialHistoryListProps)
           </div>
         );
       })}
+
+      {/* 追加フォーム */}
+      {isAdding ? (
+        <div className="bg-white rounded-lg border border-dashed border-primary-300 p-4 space-y-3">
+          <InlineCompletionTextarea
+            value={inputText}
+            onChange={setInputText}
+            context="social_history"
+            patientId={patientId}
+            placeholder="社会歴を入力... (例: 喫煙 - 20本/日、30年間)"
+            rows={2}
+            label="社会歴の追加"
+            description="入力中にSLMが補完候補を表示します"
+          />
+          <div className="flex gap-2 justify-end">
+            <button
+              onClick={handleCancel}
+              className="px-3 py-1.5 text-sm text-gray-600 bg-gray-100 rounded-md hover:bg-gray-200 transition-colors"
+            >
+              キャンセル
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={!inputText.trim()}
+              className="px-3 py-1.5 text-sm text-white bg-primary-600 rounded-md hover:bg-primary-700 transition-colors disabled:opacity-50"
+            >
+              保存
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          onClick={() => setIsAdding(true)}
+          className="w-full py-2.5 text-sm text-primary-600 bg-primary-50 border border-dashed border-primary-200 rounded-lg hover:bg-primary-100 transition-colors"
+        >
+          + 社会歴を追加
+        </button>
+      )}
     </div>
   );
 }

@@ -7,6 +7,22 @@ interface SidebarProps {
   searchQuery: string;
   onSearchChange: (query: string) => void;
   onSelectPatient: (patient: Patient) => void;
+  isLoading?: boolean;
+}
+
+function SkeletonCard() {
+  return (
+    <div className="px-4 py-3 animate-pulse">
+      <div className="flex items-center justify-between">
+        <div className="bg-gray-200 rounded h-4 w-24" />
+        <div className="bg-gray-200 rounded h-3 w-16" />
+      </div>
+      <div className="flex items-center justify-between mt-2">
+        <div className="bg-gray-200 rounded h-3 w-28" />
+        <div className="bg-gray-200 rounded h-3 w-20" />
+      </div>
+    </div>
+  );
 }
 
 export default function Sidebar({
@@ -15,6 +31,7 @@ export default function Sidebar({
   searchQuery,
   onSearchChange,
   onSelectPatient,
+  isLoading = false,
 }: SidebarProps) {
   return (
     <aside className="hidden lg:flex lg:flex-col lg:w-sidebar lg:min-w-[280px] bg-white border-r border-gray-200 h-screen">
@@ -51,7 +68,13 @@ export default function Sidebar({
 
       {/* 患者リスト */}
       <div className="flex-1 overflow-y-auto">
-        {patients.length === 0 ? (
+        {isLoading ? (
+          <div className="divide-y divide-gray-100">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <SkeletonCard key={i} />
+            ))}
+          </div>
+        ) : patients.length === 0 ? (
           <p className="p-4 text-sm text-text-muted text-center">
             患者が見つかりません
           </p>

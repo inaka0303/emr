@@ -118,6 +118,51 @@ func (h *SLMHandler) SuggestSummary(c echo.Context) error {
 	})
 }
 
+// autocompleteRequest はオートコンプリートリクエスト
+type autocompleteRequest struct {
+	Text      string `json:"text"`
+	Context   string `json:"context"`
+	PatientID *int   `json:"patient_id,omitempty"`
+}
+
+// Autocomplete は入力中のテキストに対するインライン補完候補を返す
+// POST /api/slm/autocomplete
+func (h *SLMHandler) Autocomplete(c echo.Context) error {
+	var req autocompleteRequest
+	if err := c.Bind(&req); err != nil {
+		slog.Error("リクエストバインドエラー", "error", err)
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "リクエストの形式が不正です",
+		})
+	}
+
+	validContexts := map[string]bool{
+		"family_history":  true,
+		"social_history":  true,
+		"soap_subjective": true,
+		"soap_objective":  true,
+		"soap_assessment": true,
+		"soap_plan":       true,
+	}
+
+	if !validContexts[req.Context] {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "context は 'family_history', 'social_history', 'soap_subjective', 'soap_objective', 'soap_assessment', 'soap_plan' のいずれかを指定してください",
+		})
+	}
+
+	result, isMock, latency := h.client.Autocomplete(req.Text, req.Context)
+
+	return c.JSON(http.StatusOK, slmResponse{
+		Data: result,
+		Meta: slmMeta{
+			Model:     h.client.ModelName(),
+			IsMock:    isMock,
+			LatencyMs: latency.Milliseconds(),
+		},
+	})
+}
+
 // Health はSLM推論サーバーの接続状態を返す
 // GET /api/slm/health
 func (h *SLMHandler) Health(c echo.Context) error {

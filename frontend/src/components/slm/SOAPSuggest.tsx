@@ -1,6 +1,7 @@
 import { useEffect, useCallback } from 'react';
 import type { SLMSoapSuggestion } from '../../types/api';
 import type { SuggestionState } from '../../hooks/useSLMSuggestion';
+import { useTypingEffect } from '../../hooks/useTypingEffect';
 
 interface SectionConfig {
   key: keyof SLMSoapSuggestion;
@@ -85,6 +86,29 @@ function SkeletonLines() {
       <div className="animate-pulse bg-gray-200 rounded h-4 w-5/6" />
       <div className="animate-pulse bg-gray-200 rounded h-4 w-4/6" />
     </div>
+  );
+}
+
+function TypingSuggestionText({ text, isActive }: { text: string; isActive: boolean }) {
+  const { displayText, isTyping } = useTypingEffect(
+    isActive ? text : '',
+    25,
+  );
+
+  // アクティブでないフィールドは全文を静的に表示
+  if (!isActive) {
+    return (
+      <span className="whitespace-pre-wrap leading-relaxed">{text}</span>
+    );
+  }
+
+  return (
+    <span className="whitespace-pre-wrap leading-relaxed">
+      {displayText}
+      {isTyping && (
+        <span className="inline-block w-[2px] h-[1em] bg-gray-400 ml-[1px] align-text-bottom animate-pulse" />
+      )}
+    </span>
   );
 }
 
@@ -265,7 +289,7 @@ export default function SOAPSuggest({
                   </div>
                 )}
 
-                {/* 提案テキスト（Copilotスタイル） */}
+                {/* 提案テキスト（Copilotスタイル + タイピングエフェクト） */}
                 {showSuggestion && (
                   <div
                     className={`absolute inset-0 px-3 py-2 pointer-events-none transition-opacity duration-300 ${
@@ -276,8 +300,8 @@ export default function SOAPSuggest({
                           : 'opacity-60'
                     }`}
                   >
-                    <p className="text-sm text-gray-400 italic whitespace-pre-wrap leading-relaxed">
-                      {suggestionText}
+                    <p className="text-sm text-gray-400 italic">
+                      <TypingSuggestionText text={suggestionText} isActive={isActive} />
                     </p>
                   </div>
                 )}

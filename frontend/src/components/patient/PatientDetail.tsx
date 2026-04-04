@@ -97,11 +97,11 @@ export default function PatientDetail({
       )}
 
       {activeSubTab === 'family' && (
-        <FamilyHistoryList histories={patientFamily} />
+        <FamilyHistoryList histories={patientFamily} patientId={patient.id} />
       )}
 
       {activeSubTab === 'social' && (
-        <SocialHistoryList histories={patientSocial} />
+        <SocialHistoryList histories={patientSocial} patientId={patient.id} />
       )}
     </div>
   );

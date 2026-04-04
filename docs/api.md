@@ -140,6 +140,42 @@ Response:
 }
 ```
 
+#### POST /api/slm/autocomplete
+入力中のテキストに対するインライン補完候補を返す
+
+Request:
+```json
+{
+  "text": "chi",
+  "context": "family_history",
+  "patient_id": 1
+}
+```
+
+Parameters:
+- `text` (string): 現在の入力テキスト
+- `context` (string, required): コンテキスト。`family_history`, `social_history`, `soap_subjective`, `soap_objective`, `soap_assessment`, `soap_plan` のいずれか
+- `patient_id` (int, optional): 患者ID（将来の患者固有補完用）
+
+Response:
+```json
+{
+  "data": {
+    "completion": "父：家族性大腸腺腫",
+    "full_text": "chi父：家族性大腸腺腫"
+  },
+  "meta": {
+    "model": "qwen3.5-0.8b-medical",
+    "is_mock": true,
+    "latency_ms": 50
+  }
+}
+```
+
+`completion` は入力テキストの続きとなる補完テキスト。`full_text` は入力テキストと補完を結合した全体テキスト。マッチしない場合は空の `completion` を返す。
+
+---
+
 #### GET /api/slm/health
 SLM推論サーバーの接続状態確認
 

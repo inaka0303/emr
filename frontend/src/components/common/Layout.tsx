@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import Sidebar from './Sidebar';
 import BottomNav from './BottomNav';
 import MainContent from './MainContent';
@@ -14,22 +14,28 @@ import {
   useSLMSuggestion,
   useSLMSummary,
 } from '../../hooks/useSLMSuggestion';
+import { usePatients } from '../../hooks/usePatients';
+import { usePatientData } from '../../hooks/usePatientData';
 import { post } from '../../api/client';
 import type { Patient, MainTab, MobileTab, SLMSoapSuggestion } from '../../types/api';
-import {
-  MOCK_PATIENTS,
-  MOCK_ENCOUNTERS,
-  MOCK_SOAP_NOTES,
-  MOCK_MEDICAL_HISTORY,
-  MOCK_FAMILY_HISTORY,
-  MOCK_SOCIAL_HISTORY,
-} from '../../utils/mockData';
 
 export default function Layout() {
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeMainTab, setActiveMainTab] = useState<MainTab>('chart');
   const [activeMobileTab, setActiveMobileTab] = useState<MobileTab>('patients');
+
+  // API hooks
+  const { patients: filteredPatients, isLoading: patientsLoading, error: patientsError } = usePatients(searchQuery);
+  const {
+    encounters: patientEncounters,
+    soapNotes,
+    medicalHistories,
+    familyHistories,
+    socialHistories,
+    isLoading: patientDataLoading,
+    error: patientDataError,
+  } = usePatientData(selectedPatient?.id ?? null);
 
   // SOAP フィールド値（SOAPSuggest と共有）
   const [soapFieldValues, setSoapFieldValues] = useState<
@@ -49,22 +55,6 @@ export default function Layout() {
   const soapSuggestion = useSLMSuggestion();
   const summary = useSLMSummary();
 
-  const filteredPatients = useMemo(() => {
-    if (!searchQuery.trim()) return MOCK_PATIENTS;
-    const q = searchQuery.toLowerCase();
-    return MOCK_PATIENTS.filter(
-      (p) =>
-        p.name.toLowerCase().includes(q) ||
-        p.name_kana.toLowerCase().includes(q) ||
-        p.mrn.toLowerCase().includes(q),
-    );
-  }, [searchQuery]);
-
-  const patientEncounters = useMemo(() => {
-    if (!selectedPatient) return [];
-    return MOCK_ENCOUNTERS.filter((e) => e.patient_id === selectedPatient.id);
-  }, [selectedPatient]);
-
   const handleSelectPatient = useCallback((patient: Patient) => {
     setSelectedPatient(patient);
     setActiveMobileTab('chart');
@@ -80,7 +70,7 @@ export default function Layout() {
   const handleSoapSave = useCallback(async () => {
     const encounterId =
       patientEncounters.length > 0
-        ? patientEncounters[patientEncounters.length - 1].id
+        ? patientEncounters[0].id
         : undefined;
     if (!encounterId) {
       setSaveStatus('error');
@@ -92,8 +82,6 @@ export default function Layout() {
     try {
       await post(`/encounters/${encounterId}/soap`, soapFieldValues);
       setSaveStatus('success');
-      // React 18 自動 batching: 同一ハンドラ内の setState は一括処理される
-      // reset() を先に呼び、提案状態をクリアしてからフィールド値をリセット
       soapSuggestion.reset();
       setSoapFieldValues({
         subjective: '',
@@ -112,7 +100,6 @@ export default function Layout() {
 
   const handleRequestSOAP = useCallback(
     (text: string) => {
-      // フィールドをリセットしてからリクエスト
       setSoapFieldValues({
         subjective: '',
         objective: '',
@@ -139,6 +126,9 @@ export default function Layout() {
   );
 
   const showSuggestionPanel = activeMainTab === 'interview';
+
+  // API エラーバナー
+  const apiError = patientsError || patientDataError;
 
   // 問診コンテンツ（PC/スマホ共通）
   const renderInterviewContent = (isMobile: boolean) => {
@@ -179,7 +169,7 @@ export default function Layout() {
             patientName={selectedPatient.name}
             encounterId={
               patientEncounters.length > 0
-                ? patientEncounters[patientEncounters.length - 1].id
+                ? patientEncounters[0].id
                 : undefined
             }
           />
@@ -198,6 +188,35 @@ export default function Layout() {
     );
   };
 
+  // ローディングスピナー
+  const renderLoadingSpinner = () => (
+    <div className="flex items-center justify-center py-12">
+      <div className="flex flex-col items-center gap-3">
+        <svg
+          className="animate-spin h-8 w-8 text-primary-500"
+          xmlns="http://www.w3.org/2000/svg"
+          fill="none"
+          viewBox="0 0 24 24"
+        >
+          <circle
+            className="opacity-25"
+            cx="12"
+            cy="12"
+            r="10"
+            stroke="currentColor"
+            strokeWidth="4"
+          />
+          <path
+            className="opacity-75"
+            fill="currentColor"
+            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+          />
+        </svg>
+        <span className="text-sm text-text-muted">読み込み中...</span>
+      </div>
+    </div>
+  );
+
   // スマホ版コンテンツ
   const renderMobileContent = () => {
     switch (activeMobileTab) {
@@ -211,19 +230,21 @@ export default function Layout() {
           />
         );
       case 'chart':
+        if (patientDataLoading && selectedPatient) return renderLoadingSpinner();
         return selectedPatient ? (
           <div className="space-y-6">
             <SOAPEditor
               patientName={selectedPatient.name}
+              patientId={selectedPatient.id}
               encounterId={
                 patientEncounters.length > 0
-                  ? patientEncounters[patientEncounters.length - 1].id
+                  ? patientEncounters[0].id
                   : undefined
               }
             />
             <SOAPHistory
               encounters={patientEncounters}
-              soapNotes={MOCK_SOAP_NOTES}
+              soapNotes={soapNotes}
             />
           </div>
         ) : (
@@ -283,21 +304,26 @@ export default function Layout() {
       );
     }
 
+    if (patientDataLoading) {
+      return renderLoadingSpinner();
+    }
+
     switch (activeMainTab) {
       case 'chart':
         return (
           <div className="space-y-6">
             <SOAPEditor
               patientName={selectedPatient.name}
+              patientId={selectedPatient.id}
               encounterId={
                 patientEncounters.length > 0
-                  ? patientEncounters[patientEncounters.length - 1].id
+                  ? patientEncounters[0].id
                   : undefined
               }
             />
             <SOAPHistory
               encounters={patientEncounters}
-              soapNotes={MOCK_SOAP_NOTES}
+              soapNotes={soapNotes}
             />
           </div>
         );
@@ -307,16 +333,16 @@ export default function Layout() {
         return (
           <SOAPHistory
             encounters={patientEncounters}
-            soapNotes={MOCK_SOAP_NOTES}
+            soapNotes={soapNotes}
           />
         );
       case 'patient-info':
         return (
           <PatientDetail
             patient={selectedPatient}
-            medicalHistories={MOCK_MEDICAL_HISTORY}
-            familyHistories={MOCK_FAMILY_HISTORY}
-            socialHistories={MOCK_SOCIAL_HISTORY}
+            medicalHistories={medicalHistories}
+            familyHistories={familyHistories}
+            socialHistories={socialHistories}
           />
         );
     }
@@ -324,6 +350,13 @@ export default function Layout() {
 
   return (
     <div className="flex h-screen bg-surface">
+      {/* API エラーバナー */}
+      {apiError && (
+        <div className="fixed top-0 left-0 right-0 z-50 bg-amber-50 border-b border-amber-200 px-4 py-2 text-center">
+          <span className="text-xs text-amber-700">{apiError}</span>
+        </div>
+      )}
+
       {/* PC版: サイドバー */}
       <Sidebar
         patients={filteredPatients}
@@ -331,10 +364,11 @@ export default function Layout() {
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         onSelectPatient={handleSelectPatient}
+        isLoading={patientsLoading}
       />
 
       {/* メインコンテンツ */}
-      <div className="flex-1 flex">
+      <div className={`flex-1 flex ${apiError ? 'pt-8' : ''}`}>
         {/* スマホ版 */}
         <div className="lg:hidden flex-1 overflow-y-auto p-4 pb-20">
           {renderMobileContent()}

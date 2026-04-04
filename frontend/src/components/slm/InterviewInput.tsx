@@ -9,6 +9,21 @@ interface InterviewInputProps {
   patientName: string;
 }
 
+const DEMO_PRESETS = [
+  {
+    label: '頭痛の患者',
+    text: '3日前から持続的な頭痛があります。特に右側のこめかみあたりが痛みます。ズキズキする拍動性の痛みで、光や音に敏感になっています。市販のロキソニンを飲みましたが、あまり効きませんでした。吐き気もあります。母親も偏頭痛持ちです。仕事はデスクワークで1日10時間以上パソコンに向かっています。',
+  },
+  {
+    label: '糖尿病フォロー',
+    text: '定期受診です。前回のHbA1cが7.2%で、食事療法を頑張っていますが、なかなか下がりません。最近少し体重が増えました（2kg程度）。足の痺れは変わりありません。運動は週に2回ウォーキングをしています。父親が2型糖尿病で、インスリン注射をしていました。お酒は週末にビール1本程度です。',
+  },
+  {
+    label: '腹痛の患者',
+    text: '昨日の夕食後から腹痛が続いています。みぞおちの辺りがキリキリと痛みます。食事を取ると痛みが強くなります。下痢はありませんが、少し吐き気がします。熱は37.2℃でした。1週間前に焼肉を食べに行きました。兄が胃潰瘍の既往があります。喫煙は1日10本を15年間続けています。',
+  },
+];
+
 function Spinner() {
   return (
     <svg
@@ -69,6 +84,28 @@ export default function InterviewInput({
       </div>
 
       <div className="p-4">
+        {/* サンプル入力プリセット */}
+        <div className="mb-3">
+          <span className="text-xs font-medium text-gray-500 mr-2">サンプル入力:</span>
+          <div className="inline-flex flex-wrap gap-2 mt-1">
+            {DEMO_PRESETS.map((preset) => (
+              <button
+                key={preset.label}
+                onClick={() => {
+                  setText(preset.text);
+                  // テキストエリアをリサイズ
+                  setTimeout(() => autoResize(), 0);
+                }}
+                className="px-3 py-1 text-xs font-medium text-primary-700 bg-primary-50 border border-primary-200
+                  rounded-full hover:bg-primary-100 hover:border-primary-300 transition-colors
+                  focus:outline-none focus:ring-2 focus:ring-primary-300 focus:ring-offset-1"
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
         <label
           htmlFor="interview-text"
           className="block text-sm font-medium text-gray-700 mb-2"
