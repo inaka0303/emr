@@ -165,9 +165,11 @@ func (c *Client) GenerateSOAP(ctx context.Context, interviewText string) (*SOAPS
 	}
 
 	// OpenAI互換APIにリクエスト送信
-	systemPrompt := "あなたは医療記録の作成を支援するAIアシスタントです。入力された問診内容から、SOAP形式（Subjective, Objective, Assessment, Plan）の記録を提案してください。以下のJSON形式で返してください:\n{\"subjective\": \"...\", \"objective\": \"...\", \"assessment\": \"...\", \"plan\": \"...\"}"
+	// SLMは自然文で "S: ... O: ... A: ... P: ..." と出力するため、
+	// JSON形式ではなく自然文出力→Go側でパースする方式を採用
+	systemPrompt := "あなたは日本語の電子カルテ記載を支援する医療AIアシスタントです。問診情報からSOAP形式のカルテ記載を提案します。S:（主観的情報）、O:（客観的情報）、A:（評価）、P:（計画）の順に記載してください。"
 
-	result, err := c.callChatCompletion(ctx, systemPrompt, interviewText)
+	result, err := c.callChatCompletionWithParams(ctx, systemPrompt, interviewText, 1024, 0.3)
 	if err != nil {
 		slog.Warn("SLM API呼び出し失敗。モックにフォールバック", "error", err)
 
@@ -177,17 +179,12 @@ func (c *Client) GenerateSOAP(ctx context.Context, interviewText string) (*SOAPS
 		return mockResult, true, latency, nil
 	}
 
-	var suggestion SOAPSuggestion
-	if err := json.Unmarshal([]byte(result), &suggestion); err != nil {
-		slog.Warn("SLMレスポンスのパースに失敗。モックにフォールバック", "error", err, "raw", result)
-		mockResult := generateMockSOAP(interviewText)
-		latency := time.Since(start)
-		return mockResult, true, latency, nil
-	}
+	// 自然文からSOAPをパース
+	suggestion := parseSOAPFromText(result)
 
 	latency := time.Since(start)
 	slog.Info("SOAP提案完了(SLM)", "latency_ms", latency.Milliseconds())
-	return &suggestion, false, latency, nil
+	return suggestion, false, latency, nil
 }
 
 // GenerateSummary は家族歴/社会歴の要約提案を生成する
