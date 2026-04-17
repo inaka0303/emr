@@ -208,14 +208,14 @@ func (c *Client) GenerateSummary(ctx context.Context, interviewText string, cate
 	var systemPrompt string
 	switch category {
 	case "family_history":
-		systemPrompt = "あなたは医療記録の作成を支援するAIアシスタントです。入力された問診内容から、家族歴の情報を抽出してください。以下のJSON形式で返してください:\n{\"suggestions\": [{\"field\": \"relation\", \"value\": \"続柄\", \"confidence\": 0.95}, {\"field\": \"condition\", \"value\": \"疾患名\", \"confidence\": 0.90}]}"
+		systemPrompt = "あなたは医療記録の作成を支援するAIアシスタントです。入力された問診内容から、家族歴の情報を抽出してください。「続柄：疾患名」の形式で1行ずつ記載してください。"
 	case "social_history":
-		systemPrompt = "あなたは医療記録の作成を支援するAIアシスタントです。入力された問診内容から、社会歴の情報（喫煙、飲酒、職業、運動など）を抽出してください。以下のJSON形式で返してください:\n{\"suggestions\": [{\"field\": \"category\", \"value\": \"カテゴリ\", \"confidence\": 0.95}, {\"field\": \"description\", \"value\": \"詳細\", \"confidence\": 0.88}]}"
+		systemPrompt = "あなたは医療記録の作成を支援するAIアシスタントです。入力された問診内容から、社会歴の情報（喫煙、飲酒、職業、運動など）を抽出してください。「カテゴリ：詳細」の形式で1行ずつ記載してください。"
 	default:
 		return nil, false, 0, fmt.Errorf("不明なカテゴリ: %s", category)
 	}
 
-	result, err := c.callChatCompletion(ctx, systemPrompt, interviewText)
+	result, err := c.callChatCompletionWithParams(ctx, systemPrompt, interviewText, 512, 0.3)
 	if err != nil {
 		slog.Warn("SLM API呼び出し失敗。モックにフォールバック", "error", err)
 
@@ -225,17 +225,12 @@ func (c *Client) GenerateSummary(ctx context.Context, interviewText string, cate
 		return mockResult, true, latency, nil
 	}
 
-	var suggestion SummarySuggestion
-	if err := json.Unmarshal([]byte(result), &suggestion); err != nil {
-		slog.Warn("SLMレスポンスのパースに失敗。モックにフォールバック", "error", err, "raw", result)
-		mockResult := generateMockSummary(interviewText, category)
-		latency := time.Since(start)
-		return mockResult, true, latency, nil
-	}
+	// 自然文からサマリーをパース
+	suggestion := parseSummaryFromText(result, category)
 
 	latency := time.Since(start)
 	slog.Info("サマリー提案完了(SLM)", "category", category, "latency_ms", latency.Milliseconds())
-	return &suggestion, false, latency, nil
+	return suggestion, false, latency, nil
 }
 
 // callChatCompletionWithParams はOpenAI互換APIを呼び出す（パラメータ指定版）

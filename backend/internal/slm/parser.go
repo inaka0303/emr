@@ -115,3 +115,73 @@ func parseSOAPFromText(text string) *SOAPSuggestion {
 
 	return suggestion
 }
+
+// parseSummaryFromText はSLMの自然文出力から家族歴/社会歴の情報を抽出する
+// 入力例（family_history）:
+//   父：高血圧症（60歳で発症）
+//   母：2型糖尿病
+//   祖父：胃がん（70歳で死亡）
+func parseSummaryFromText(text string, category string) *SummarySuggestion {
+	suggestion := &SummarySuggestion{}
+
+	// <think>...</think> を除去
+	if idx := strings.Index(text, "</think>"); idx >= 0 {
+		text = strings.TrimSpace(text[idx+len("</think>"):])
+	}
+
+	lines := strings.Split(text, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		// マークダウンの箇条書き記号を除去
+		trimmed = strings.TrimPrefix(trimmed, "- ")
+		trimmed = strings.TrimPrefix(trimmed, "* ")
+		trimmed = strings.TrimPrefix(trimmed, "・")
+		trimmed = strings.TrimSpace(trimmed)
+
+		// 「：」または「:」で分割
+		var field, value string
+		if idx := strings.Index(trimmed, "："); idx >= 0 {
+			field = strings.TrimSpace(trimmed[:idx])
+			value = strings.TrimSpace(trimmed[idx+len("："):])
+		} else if idx := strings.Index(trimmed, ":"); idx >= 0 {
+			field = strings.TrimSpace(trimmed[:idx])
+			value = strings.TrimSpace(trimmed[idx+1:])
+		} else {
+			continue // 分割できない行はスキップ
+		}
+
+		if field == "" || value == "" {
+			continue
+		}
+
+		// カテゴリに応じたフィールド名を設定
+		if category == "family_history" {
+			suggestion.Suggestions = append(suggestion.Suggestions, SummarySuggestionItem{
+				Field:      "relation",
+				Value:      field,
+				Confidence: 0.85,
+			})
+			suggestion.Suggestions = append(suggestion.Suggestions, SummarySuggestionItem{
+				Field:      "condition",
+				Value:      value,
+				Confidence: 0.85,
+			})
+		} else {
+			suggestion.Suggestions = append(suggestion.Suggestions, SummarySuggestionItem{
+				Field:      "category",
+				Value:      field,
+				Confidence: 0.85,
+			})
+			suggestion.Suggestions = append(suggestion.Suggestions, SummarySuggestionItem{
+				Field:      "description",
+				Value:      value,
+				Confidence: 0.85,
+			})
+		}
+	}
+
+	return suggestion
+}
