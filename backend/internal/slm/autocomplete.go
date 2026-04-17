@@ -1,6 +1,8 @@
 package slm
 
 import (
+	"context"
+	"log"
 	"math/rand"
 	"strings"
 	"time"
@@ -120,14 +122,30 @@ var contextCompletionMap = map[string][]CompletionEntry{
 	"soap_plan":       soapPlanCompletions,
 }
 
+// contextToSystemPrompt はコンテキストタイプに応じたシステムプロンプトを返す
+func contextToSystemPrompt(contextType string) string {
+	switch contextType {
+	case "soap_subjective":
+		return "あなたは日本語の電子カルテ記載を支援する医療AIアシスタントです。S（主観的情報）のカルテ記載の続きを書いてください。患者の訴えや症状をカルテの文体で簡潔に記載してください。続きのテキストのみを出力してください。"
+	case "soap_objective":
+		return "あなたは日本語の電子カルテ記載を支援する医療AIアシスタントです。O（客観的情報）のカルテ記載の続きを書いてください。バイタルサイン、検査値、身体所見をカルテの文体で記載してください。続きのテキストのみを出力してください。"
+	case "soap_assessment":
+		return "あなたは日本語の電子カルテ記載を支援する医療AIアシスタントです。A（評価・アセスメント）のカルテ記載の続きを書いてください。問題リストを#番号で整理し、カルテの文体で記載してください。続きのテキストのみを出力してください。"
+	case "soap_plan":
+		return "あなたは日本語の電子カルテ記載を支援する医療AIアシスタントです。P（計画）のカルテ記載の続きを書いてください。「〜する。」「〜を検討。」のようなカルテ記載の文体で、続きのテキストのみを出力してください。説明文ではなくカルテの記載として書いてください。"
+	case "family_history":
+		return "あなたは日本語の電子カルテ記載を支援する医療AIアシスタントです。家族歴の記載を続けてください。続きのテキストのみを出力してください。"
+	case "social_history":
+		return "あなたは日本語の電子カルテ記載を支援する医療AIアシスタントです。社会歴の記載を続けてください。続きのテキストのみを出力してください。"
+	default:
+		return "あなたは日本語の電子カルテ記載を支援する医療AIアシスタントです。入力テキストの続きを提案してください。続きのテキストのみを出力してください。"
+	}
+}
+
 // Autocomplete は入力テキストに対するインライン補完を返す
-// モックベースの補完辞書を使用し、前方一致で候補を検索する
+// SLM接続時はllama-server APIを使い、非接続時はモック辞書にフォールバック
 func (c *Client) Autocomplete(text string, contextType string) (*AutocompleteResult, bool, time.Duration) {
 	start := time.Now()
-
-	// 短い遅延を入れてリアルな体感にする（30-80ms）
-	delay := 30 + rand.Intn(50)
-	time.Sleep(time.Duration(delay) * time.Millisecond)
 
 	// 空テキストの場合は空の結果を返す
 	if text == "" {
@@ -138,7 +156,105 @@ func (c *Client) Autocomplete(text string, contextType string) (*AutocompleteRes
 		}, true, latency
 	}
 
-	// コンテキストに応じた辞書を取得
+	// 短すぎるテキスト（2文字未満）はモック辞書で対応
+	if len([]rune(text)) < 2 {
+		return c.autocompleteFromDict(text, contextType, start)
+	}
+
+	c.mu.RLock()
+	useMock := c.useMock
+	c.mu.RUnlock()
+
+	if useMock {
+		return c.autocompleteFromDict(text, contextType, start)
+	}
+
+	// SLM APIで補完を生成
+	systemPrompt := contextToSystemPrompt(contextType)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// コンテキストに応じてmax_tokensを調整
+	maxTokens := 128
+	switch contextType {
+	case "soap_assessment":
+		maxTokens = 64 // A記載は短め（反復防止）
+	case "soap_objective":
+		maxTokens = 96 // O記載は中程度
+	}
+	result, err := c.callChatCompletionWithParams(ctx, systemPrompt, text, maxTokens, 0.5)
+	if err != nil {
+		log.Println("SLM autocomplete失敗、モック辞書にフォールバック", "error", err)
+		return c.autocompleteFromDict(text, contextType, start)
+	}
+
+	// SLMの出力をクリーンアップ
+	completion := strings.TrimSpace(result)
+	// 入力テキストの繰り返しを除去（完全一致）
+	if strings.HasPrefix(completion, text) {
+		completion = strings.TrimSpace(completion[len(text):])
+	}
+	// 入力テキストの末尾部分が重複している場合を除去
+	// 例: 入力「労作時の」→ SLM出力「労作時の胸やけ」→ 「胸やけ」だけ取る
+	textRunes := []rune(text)
+	compRunes := []rune(completion)
+	for overlapLen := len(textRunes); overlapLen > 0; overlapLen-- {
+		suffix := string(textRunes[len(textRunes)-overlapLen:])
+		if strings.HasPrefix(completion, suffix) {
+			completion = strings.TrimSpace(string(compRunes[len([]rune(suffix)):]))
+			break
+		}
+	}
+	// "S:" "O:" "A:" "P:" など不要なプレフィックスを除去
+	for _, prefix := range []string{"S:", "O:", "A:", "P:", "S.", "O.", "A.", "P.", "S：", "O：", "A：", "P："} {
+		completion = strings.TrimPrefix(completion, prefix)
+		completion = strings.TrimSpace(completion)
+	}
+	// 反復検出: 同じ20文字以上のフレーズが2回以上出たらカット
+	compRunesCheck := []rune(completion)
+	if len(compRunesCheck) > 40 {
+		for checkLen := 20; checkLen <= len(compRunesCheck)/2; checkLen++ {
+			chunk := string(compRunesCheck[:checkLen])
+			rest := string(compRunesCheck[checkLen:])
+			if strings.Contains(rest, chunk) {
+				completion = string(compRunesCheck[:checkLen])
+				break
+			}
+		}
+	}
+	// 長すぎる補完を切り詰め（1文程度に）
+	if runes := []rune(completion); len(runes) > 100 {
+		// 句点・改行で切る
+		for i, r := range runes {
+			if i > 20 && (r == '。' || r == '\n' || r == '．') {
+				completion = string(runes[:i+1])
+				break
+			}
+		}
+		if len([]rune(completion)) > 100 {
+			completion = string(runes[:100])
+		}
+	}
+
+	latency := time.Since(start)
+	log.Println("SLM autocomplete完了",
+		"context", contextType,
+		"input_len", len([]rune(text)),
+		"completion_len", len([]rune(completion)),
+		"latency_ms", latency.Milliseconds())
+
+	return &AutocompleteResult{
+		Completion: completion,
+		FullText:   text + completion,
+	}, false, latency
+}
+
+// autocompleteFromDict はモック辞書ベースの補完（フォールバック用）
+func (c *Client) autocompleteFromDict(text string, contextType string, start time.Time) (*AutocompleteResult, bool, time.Duration) {
+	// 短い遅延を入れてリアルな体感にする（30-80ms）
+	delay := 30 + rand.Intn(50)
+	time.Sleep(time.Duration(delay) * time.Millisecond)
+
 	entries, ok := contextCompletionMap[contextType]
 	if !ok {
 		latency := time.Since(start)
@@ -148,28 +264,21 @@ func (c *Client) Autocomplete(text string, contextType string) (*AutocompleteRes
 		}, true, latency
 	}
 
-	// マッチングロジック:
-	// 1. 入力テキストがプレフィックスで始まる場合（テキストがプレフィックスより長い or 同じ）
-	//    → 最も長いプレフィックスを優先
-	// 2. プレフィックスが入力テキストで始まる場合（テキストがプレフィックスより短い）
-	//    → 最も短いプレフィックス（=最も近いマッチ）を優先
 	var bestMatch *CompletionEntry
 	bestPrefixLen := 0
 	var bestPartialMatch *CompletionEntry
-	bestPartialLen := int(^uint(0) >> 1) // MaxInt
+	bestPartialLen := int(^uint(0) >> 1)
 
 	for i := range entries {
 		entry := &entries[i]
 		prefixLen := len([]rune(entry.Prefix))
 
 		if strings.HasPrefix(text, entry.Prefix) {
-			// テキストがプレフィックスを含む（完全一致含む）→ 最長マッチ優先
 			if prefixLen > bestPrefixLen {
 				bestMatch = entry
 				bestPrefixLen = prefixLen
 			}
 		} else if strings.HasPrefix(entry.Prefix, text) {
-			// テキストが途中（例: "父" で "父方" にマッチ）→ 最短マッチ優先
 			if prefixLen < bestPartialLen {
 				bestPartialMatch = entry
 				bestPartialLen = prefixLen
@@ -177,7 +286,6 @@ func (c *Client) Autocomplete(text string, contextType string) (*AutocompleteRes
 		}
 	}
 
-	// 完全マッチがない場合のみ部分マッチを使う
 	if bestMatch == nil {
 		bestMatch = bestPartialMatch
 	}
@@ -190,19 +298,13 @@ func (c *Client) Autocomplete(text string, contextType string) (*AutocompleteRes
 		}, true, latency
 	}
 
-	// 補完テキストの計算
-	// Completionフィールドはフルテキスト（プレフィックス含む）
-	// 入力テキスト部分を除いた「続き」を返す
 	completionFullRunes := []rune(bestMatch.Completion)
 	textRunes := []rune(text)
 
 	var completion string
 	if strings.HasPrefix(bestMatch.Completion, text) {
-		// 補完テキストが入力テキストで始まる場合
 		completion = string(completionFullRunes[len(textRunes):])
 	} else {
-		// 入力テキスト（例: ローマ字"chi"）がプレフィックスにマッチしたが、
-		// 補完テキストは日本語で始まる場合 → 補完テキスト全体が「続き」
 		completion = bestMatch.Completion
 	}
 

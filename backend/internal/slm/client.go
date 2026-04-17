@@ -100,7 +100,7 @@ func NewClient(baseURL string) *Client {
 func (c *Client) checkHealth() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/models", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)
 	if err != nil {
 		return false
 	}
@@ -241,16 +241,16 @@ func (c *Client) GenerateSummary(ctx context.Context, interviewText string, cate
 	return &suggestion, false, latency, nil
 }
 
-// callChatCompletion はOpenAI互換APIを呼び出す
-func (c *Client) callChatCompletion(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
+// callChatCompletionWithParams はOpenAI互換APIを呼び出す（パラメータ指定版）
+func (c *Client) callChatCompletionWithParams(ctx context.Context, systemPrompt, userPrompt string, maxTokens int, temperature float64) (string, error) {
 	reqBody := ChatCompletionRequest{
 		Model: modelName,
 		Messages: []Message{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userPrompt},
 		},
-		Temperature: 0.3,
-		MaxTokens:   1024,
+		Temperature: temperature,
+		MaxTokens:   maxTokens,
 	}
 
 	bodyBytes, err := json.Marshal(reqBody)
