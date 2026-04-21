@@ -77,6 +77,41 @@ func (h *SLMHandler) SuggestSOAP(c echo.Context) error {
 	})
 }
 
+// SuggestAdmissionSummary は詳細問診から入院時サマリを生成する
+// POST /api/slm/suggest/admission
+func (h *SLMHandler) SuggestAdmissionSummary(c echo.Context) error {
+	var req suggestSOAPRequest
+	if err := c.Bind(&req); err != nil {
+		slog.Error("リクエストバインドエラー", "error", err)
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "リクエストの形式が不正です",
+		})
+	}
+
+	if req.InterviewText == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "interview_text は必須です",
+		})
+	}
+
+	summary, isMock, latency, err := h.client.GenerateAdmissionSummary(c.Request().Context(), req.InterviewText)
+	if err != nil {
+		slog.Error("入院時サマリ生成エラー", "error", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "入院時サマリの生成に失敗しました",
+		})
+	}
+
+	return c.JSON(http.StatusOK, slmResponse{
+		Data: summary,
+		Meta: slmMeta{
+			Model:     h.client.ModelName(),
+			IsMock:    isMock,
+			LatencyMs: latency.Milliseconds(),
+		},
+	})
+}
+
 // SuggestSummary は家族歴/社会歴の要約提案を生成する
 // POST /api/slm/suggest/summary
 func (h *SLMHandler) SuggestSummary(c echo.Context) error {
@@ -119,10 +154,16 @@ func (h *SLMHandler) SuggestSummary(c echo.Context) error {
 }
 
 // autocompleteRequest はオートコンプリートリクエスト
+//
+// 訓練データに近いフォーマットで推論するため、問診全文 (InterviewText) と
+// 既記載セクション (PriorSections: キーは "S"/"O"/"A") を受け取る。
+// これらが無い場合は text のみで補完する（旧互換）。
 type autocompleteRequest struct {
-	Text      string `json:"text"`
-	Context   string `json:"context"`
-	PatientID *int   `json:"patient_id,omitempty"`
+	Text          string            `json:"text"`
+	Context       string            `json:"context"`
+	PatientID     *int              `json:"patient_id,omitempty"`
+	InterviewText string            `json:"interview_text,omitempty"`
+	PriorSections map[string]string `json:"prior_sections,omitempty"`
 }
 
 // Autocomplete は入力中のテキストに対するインライン補完候補を返す
@@ -151,7 +192,7 @@ func (h *SLMHandler) Autocomplete(c echo.Context) error {
 		})
 	}
 
-	result, isMock, latency := h.client.Autocomplete(req.Text, req.Context)
+	result, isMock, latency := h.client.Autocomplete(req.Text, req.Context, req.InterviewText, req.PriorSections)
 
 	return c.JSON(http.StatusOK, slmResponse{
 		Data: result,

@@ -96,22 +96,13 @@ export interface SLMSoapSuggestion {
   plan: string;
 }
 
-// SLM サマリー提案レスポンス
-export interface SLMSummarySuggestionItem {
-  field: string;
-  value: string;
-  confidence: number;
-}
-
-export interface SLMSummarySuggestion {
-  suggestions: SLMSummarySuggestionItem[];
-}
-
 // SLM メタ情報
 export interface SLMMeta {
   model: string;
   is_mock: boolean;
   latency_ms?: number;
+  /** SOAPドラフトがDBキャッシュから返された場合 true */
+  cached?: boolean;
 }
 
 // ページネーション用メタ情報
@@ -141,5 +132,5 @@ export interface ApiError {
 }
 
 // ナビゲーションタブ
-export type MainTab = 'chart' | 'interview' | 'history' | 'patient-info';
-export type MobileTab = 'patients' | 'chart' | 'interview' | 'settings';
+export type MainTab = 'chart' | 'history' | 'patient-info';
+export type MobileTab = 'patients' | 'chart' | 'settings';

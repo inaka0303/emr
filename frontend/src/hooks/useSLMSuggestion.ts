@@ -1,8 +1,7 @@
 import { useState, useCallback } from 'react';
-import { suggestSOAP, suggestSummary } from '../api/slm';
+import { suggestSOAP } from '../api/slm';
 import type {
   SLMSoapSuggestion,
-  SLMSummarySuggestionItem,
   SLMMeta,
 } from '../types/api';
 
@@ -156,109 +155,3 @@ export function useSLMSuggestion() {
   };
 }
 
-export interface SummaryState {
-  suggestions: SLMSummarySuggestionItem[];
-  acceptedItems: Set<number>;
-  dismissedItems: Set<number>;
-  isLoading: boolean;
-  meta: SLMMeta | null;
-  error: string | null;
-  category: 'family_history' | 'social_history' | null;
-}
-
-export function useSLMSummary() {
-  const [state, setState] = useState<SummaryState>({
-    suggestions: [],
-    acceptedItems: new Set(),
-    dismissedItems: new Set(),
-    isLoading: false,
-    meta: null,
-    error: null,
-    category: null,
-  });
-
-  const requestSummary = useCallback(
-    async (
-      interviewText: string,
-      category: 'family_history' | 'social_history',
-    ) => {
-      setState((prev) => ({
-        ...prev,
-        isLoading: true,
-        error: null,
-        suggestions: [],
-        acceptedItems: new Set(),
-        dismissedItems: new Set(),
-        meta: null,
-        category,
-      }));
-
-      try {
-        const response = await suggestSummary(interviewText, category);
-        setState((prev) => ({
-          ...prev,
-          isLoading: false,
-          suggestions: response.data.suggestions,
-          meta: response.meta,
-        }));
-      } catch (err) {
-        setState((prev) => ({
-          ...prev,
-          isLoading: false,
-          error:
-            err instanceof Error ? err.message : '要約提案の取得に失敗しました',
-        }));
-      }
-    },
-    [],
-  );
-
-  const acceptItem = useCallback((index: number) => {
-    setState((prev) => {
-      const newAccepted = new Set(prev.acceptedItems);
-      newAccepted.add(index);
-      return { ...prev, acceptedItems: newAccepted };
-    });
-  }, []);
-
-  const dismissItem = useCallback((index: number) => {
-    setState((prev) => {
-      const newDismissed = new Set(prev.dismissedItems);
-      newDismissed.add(index);
-      return { ...prev, dismissedItems: newDismissed };
-    });
-  }, []);
-
-  const acceptAll = useCallback(() => {
-    setState((prev) => {
-      const newAccepted = new Set(prev.acceptedItems);
-      prev.suggestions.forEach((_, i) => {
-        if (!prev.dismissedItems.has(i)) {
-          newAccepted.add(i);
-        }
-      });
-      return { ...prev, acceptedItems: newAccepted };
-    });
-  }, []);
-
-  const reset = useCallback(() => {
-    setState({
-      suggestions: [],
-      acceptedItems: new Set(),
-      dismissedItems: new Set(),
-      isLoading: false,
-      meta: null,
-      error: null,
-      category: null,
-    });
-  }, []);
-
-  return {
-    state,
-    requestSummary,
-    acceptItem,
-    dismissItem,
-    acceptAll,
-    reset,
-  };
-}

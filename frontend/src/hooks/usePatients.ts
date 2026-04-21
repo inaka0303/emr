@@ -29,7 +29,7 @@ export function usePatients(query: string): UsePatientsResult {
     try {
       const params = searchQuery.trim() ? `?q=${encodeURIComponent(searchQuery)}` : '';
       const response = await get<ApiResponse<Patient[]>>(`/patients${params}`);
-      setPatients(response.data);
+      setPatients(response.data ?? []);
       setError(null);
     } catch (err) {
       // AbortError は無視

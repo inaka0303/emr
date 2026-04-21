@@ -49,11 +49,11 @@ export function usePatientData(patientId: number | null): UsePatientDataResult {
         get<ApiResponse<SocialHistory[]>>(`/patients/${pid}/social-history`),
       ]);
 
-      const fetchedEncounters = encountersRes.data;
+      const fetchedEncounters = encountersRes.data ?? [];
       setEncounters(fetchedEncounters);
-      setMedicalHistories(medicalRes.data);
-      setFamilyHistories(familyRes.data);
-      setSocialHistories(socialRes.data);
+      setMedicalHistories(medicalRes.data ?? []);
+      setFamilyHistories(familyRes.data ?? []);
+      setSocialHistories(socialRes.data ?? []);
 
       // 各 encounter の SOAP ノートを取得
       if (fetchedEncounters.length > 0) {
@@ -64,7 +64,7 @@ export function usePatientData(patientId: number | null): UsePatientDataResult {
             })),
           ),
         );
-        const allSoapNotes = soapResults.flatMap((res) => res.data);
+        const allSoapNotes = soapResults.flatMap((res) => res.data ?? []);
         setSoapNotes(allSoapNotes);
       } else {
         setSoapNotes([]);

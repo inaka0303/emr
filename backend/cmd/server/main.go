@@ -2,9 +2,12 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"sort"
+	"strings"
 
 	"github.com/example/ehr-demo/db/migrations"
 	"github.com/example/ehr-demo/internal/handler"
@@ -76,6 +79,10 @@ func main() {
 	slmClient := slm.NewClient(slmAPIURL)
 	slmHandler := handler.NewSLMHandler(slmClient)
 
+	// SOAPドラフト（DBキャッシュ付き）
+	soapDraftRepo := repository.NewSOAPDraftRepository(db)
+	soapDraftHandler := handler.NewSOAPDraftHandler(slmClient, soapDraftRepo, interviewSvc)
+
 	// Echo初期化
 	e := echo.New()
 	e.HideBanner = true
@@ -125,8 +132,25 @@ func main() {
 	api.GET("/encounters/:id/interviews", interviewHandler.ListByEncounter)
 	api.POST("/encounters/:id/interviews", interviewHandler.Create)
 
+	// SOAPドラフト（DBキャッシュ付き、SLM生成）
+	api.POST("/encounters/:id/soap-draft", soapDraftHandler.GetOrGenerate)
+	api.POST("/encounters/:id/soap-draft/stream", soapDraftHandler.StreamGenerate)
+	api.DELETE("/encounters/:id/soap-draft", soapDraftHandler.Invalidate)
+
+	// 入院時サマリ（編集後の永続化）
+	admissionSummaryRepo := repository.NewAdmissionSummaryRepository(db)
+	admissionSummaryHandler := handler.NewAdmissionSummaryHandler(admissionSummaryRepo)
+	api.GET("/encounters/:id/admission-summary", admissionSummaryHandler.Get)
+	api.POST("/encounters/:id/admission-summary", admissionSummaryHandler.Save)
+
+	// RAG 検索（Python rag_server.py への proxy）
+	ragHandler := handler.NewRAGHandler()
+	api.POST("/rag/search", ragHandler.Search)
+	api.GET("/rag/health", ragHandler.Health)
+
 	// SLM ルート
 	api.POST("/slm/suggest/soap", slmHandler.SuggestSOAP)
+	api.POST("/slm/suggest/admission", slmHandler.SuggestAdmissionSummary)
 	api.POST("/slm/suggest/summary", slmHandler.SuggestSummary)
 	api.POST("/slm/autocomplete", slmHandler.Autocomplete)
 	api.GET("/slm/health", slmHandler.Health)
@@ -134,6 +158,7 @@ func main() {
 	// シードエンドポイント（本番環境では無効）
 	if os.Getenv("APP_ENV") != "production" {
 		api.GET("/seed", seedHandler.Seed)
+		api.POST("/test-patient/reset", seedHandler.ResetTestPatient)
 	}
 
 	// ヘルスチェック
@@ -150,10 +175,37 @@ func main() {
 }
 
 func runMigrations(db *sql.DB) error {
-	migrationSQL, err := migrations.FS.ReadFile("001_initial.sql")
+	entries, err := migrations.FS.ReadDir(".")
 	if err != nil {
-		return err
+		return fmt.Errorf("read migrations dir: %w", err)
 	}
-	_, err = db.Exec(string(migrationSQL))
-	return err
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		n := e.Name()
+		if strings.HasSuffix(n, ".sql") {
+			names = append(names, n)
+		}
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		sqlBytes, err := migrations.FS.ReadFile(n)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", n, err)
+		}
+		if _, err := db.Exec(string(sqlBytes)); err != nil {
+			// SQLiteの ALTER TABLE ADD COLUMN は IF NOT EXISTS 非対応のため、
+			// 既適用マイグレーションでのduplicate column エラーは冪等性として許容する
+			msg := err.Error()
+			if strings.Contains(msg, "duplicate column name") || strings.Contains(msg, "already exists") {
+				slog.Info("マイグレーションスキップ（既適用）", "file", n)
+				continue
+			}
+			return fmt.Errorf("exec %s: %w", n, err)
+		}
+		slog.Info("マイグレーション適用", "file", n)
+	}
+	return nil
 }

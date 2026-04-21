@@ -52,8 +52,9 @@ func (h *InterviewHandler) Create(c echo.Context) error {
 
 	note.EncounterID = encounterID
 
-	if note.RawText == "" {
-		return c.JSON(http.StatusBadRequest, model.NewErrorResponse("VALIDATION_ERROR", "必須フィールド（raw_text）が不足しています"))
+	// 4セクションのうちどれか1つでも内容があればOK
+	if note.RawText == "" && note.MedicationList == "" && note.ExamFindings == "" && note.LabResults == "" {
+		return c.JSON(http.StatusBadRequest, model.NewErrorResponse("VALIDATION_ERROR", "4セクション（問診/お薬/所見/検査）のうち少なくとも1つに内容を入力してください"))
 	}
 
 	if err := h.svc.Create(c.Request().Context(), &note); err != nil {

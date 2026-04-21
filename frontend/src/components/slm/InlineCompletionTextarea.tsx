@@ -11,6 +11,10 @@ interface InlineCompletionTextareaProps {
   className?: string;
   label?: string;
   description?: string;
+  /** 問診全文（SLMに患者コンテキストを渡してハルシネーション低減） */
+  interviewText?: string;
+  /** 既記載セクション（キー "S"/"O"/"A" 等）。現セクションより前のものを渡す */
+  priorSections?: Record<string, string>;
 }
 
 export default function InlineCompletionTextarea({
@@ -23,6 +27,8 @@ export default function InlineCompletionTextarea({
   className = '',
   label,
   description,
+  interviewText,
+  priorSections,
 }: InlineCompletionTextareaProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -31,7 +37,7 @@ export default function InlineCompletionTextarea({
 
   const { completion, isLoading, accept, dismiss } = useInlineCompletion(
     value,
-    { context, patientId },
+    { context, patientId, interviewText, priorSections },
   );
 
   // テキストエリアとオーバーレイのスクロールを同期

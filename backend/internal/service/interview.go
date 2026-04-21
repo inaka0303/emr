@@ -22,7 +22,12 @@ func (s *InterviewService) ListByEncounterID(ctx context.Context, encounterID in
 	return s.repo.ListByEncounterID(ctx, encounterID)
 }
 
-// Create は新しい問診記録を登録する
+// Create は新しい問診記録を登録する（upsert: 1 encounter = 1 note）
 func (s *InterviewService) Create(ctx context.Context, note *model.InterviewNote) error {
-	return s.repo.Create(ctx, note)
+	return s.repo.UpsertByEncounterID(ctx, note)
+}
+
+// DeleteByEncounterID は encounter_id に紐づく問診記録を全削除する（リセット用）
+func (s *InterviewService) DeleteByEncounterID(ctx context.Context, encounterID int64) error {
+	return s.repo.DeleteByEncounterID(ctx, encounterID)
 }

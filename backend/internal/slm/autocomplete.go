@@ -123,16 +123,13 @@ var contextCompletionMap = map[string][]CompletionEntry{
 }
 
 // contextToSystemPrompt はコンテキストタイプに応じたシステムプロンプトを返す
+//
+// SOAP系は suggest LoRA の訓練時と同一のシステムプロンプトを使う（訓練分布と揃える）。
+// 家族歴/社会歴は既存のままにしておく（別用途のため）。
 func contextToSystemPrompt(contextType string) string {
 	switch contextType {
-	case "soap_subjective":
-		return "あなたは日本語の電子カルテ記載を支援する医療AIアシスタントです。S（主観的情報）のカルテ記載の続きを書いてください。患者の訴えや症状をカルテの文体で簡潔に記載してください。続きのテキストのみを出力してください。"
-	case "soap_objective":
-		return "あなたは日本語の電子カルテ記載を支援する医療AIアシスタントです。O（客観的情報）のカルテ記載の続きを書いてください。バイタルサイン、検査値、身体所見をカルテの文体で記載してください。続きのテキストのみを出力してください。"
-	case "soap_assessment":
-		return "あなたは日本語の電子カルテ記載を支援する医療AIアシスタントです。A（評価・アセスメント）のカルテ記載の続きを書いてください。問題リストを#番号で整理し、カルテの文体で記載してください。続きのテキストのみを出力してください。"
-	case "soap_plan":
-		return "あなたは日本語の電子カルテ記載を支援する医療AIアシスタントです。P（計画）のカルテ記載の続きを書いてください。「〜する。」「〜を検討。」のようなカルテ記載の文体で、続きのテキストのみを出力してください。説明文ではなくカルテの記載として書いてください。"
+	case "soap_subjective", "soap_objective", "soap_assessment", "soap_plan":
+		return "あなたは日本語の電子カルテ記載を支援する医療AIアシスタントです。問診情報を元に、カルテの続きを提案します。"
 	case "family_history":
 		return "あなたは日本語の電子カルテ記載を支援する医療AIアシスタントです。家族歴の記載を続けてください。続きのテキストのみを出力してください。"
 	case "social_history":
@@ -142,9 +139,86 @@ func contextToSystemPrompt(contextType string) string {
 	}
 }
 
+// soapSectionMeta はSOAPコンテキストタイプからセクション情報を返す
+func soapSectionMeta(contextType string) (letter, fullName string, ok bool) {
+	switch contextType {
+	case "soap_subjective":
+		return "S", "S（主観的情報）", true
+	case "soap_objective":
+		return "O", "O（客観的情報）", true
+	case "soap_assessment":
+		return "A", "A（評価）", true
+	case "soap_plan":
+		return "P", "P（計画）", true
+	}
+	return "", "", false
+}
+
+// buildPrefillPrompt は suggest LoRA 向けに user prompt と assistant prefill を組み立てる
+//
+// 訓練データと整合するパターン:
+//   [user]      【問診記録】...
+//               【記載済み】S: ... O: ...    （現セクションより前のもの）
+//               上記に続けて、{現セクション名}を記載してください。
+//   [assistant] {letter}: {入力中partialText}      ← ここが prefill
+//   [生成]       partial の続きの文
+//
+// llama.cpp の --prefill-assistant デフォルト有効機能により、
+// 末尾が assistant role のメッセージは「続き生成」モードに入る。
+// → 入力 echo / section ラベル混入 / 重複 が構造的に発生しなくなる。
+//
+// interviewText が空 or 非SOAPコンテキストの場合は旧挙動（textをuserに入れるだけ、prefill無し）。
+func buildPrefillPrompt(contextType, text, interviewText string, priorSections map[string]string) (userPrompt, assistantPrefill string) {
+	letter, fullName, ok := soapSectionMeta(contextType)
+	if !ok || interviewText == "" {
+		return text, ""
+	}
+
+	var u strings.Builder
+	u.WriteString("【問診記録】\n")
+	u.WriteString(strings.TrimSpace(interviewText))
+	u.WriteString("\n")
+
+	// 現セクションより前の記載済み内容を【記載済み】ブロックで提示
+	hasPrior := false
+	for _, prev := range []string{"S", "O", "A", "P"} {
+		if prev == letter {
+			break
+		}
+		if v, has := priorSections[prev]; has && strings.TrimSpace(v) != "" {
+			if !hasPrior {
+				u.WriteString("\n【記載済み】\n")
+				hasPrior = true
+			}
+			u.WriteString(prev)
+			u.WriteString(": ")
+			u.WriteString(strings.TrimSpace(v))
+			u.WriteString("\n")
+		}
+	}
+
+	if hasPrior {
+		u.WriteString("\n上記に続けて、")
+		u.WriteString(fullName)
+		u.WriteString("を記載してください。")
+	} else {
+		u.WriteString("\n上記の問診記録から、")
+		u.WriteString(fullName)
+		u.WriteString("を記載してください。")
+	}
+
+	// assistant prefill: 「S: {ユーザー入力中}」のように前置きを書く
+	// → モデルは prefill の続きを生成する（入力 echo や section ラベル混入が起きない）
+	prefill := letter + ": " + text
+	return u.String(), prefill
+}
+
 // Autocomplete は入力テキストに対するインライン補完を返す
 // SLM接続時はllama-server APIを使い、非接続時はモック辞書にフォールバック
-func (c *Client) Autocomplete(text string, contextType string) (*AutocompleteResult, bool, time.Duration) {
+//
+// interviewText / priorSections を渡すと、suggest LoRAの訓練分布に近いプロンプトを構築し、
+// 患者コンテキストに基づいたハルシネーションの少ない補完が得られる。
+func (c *Client) Autocomplete(text, contextType, interviewText string, priorSections map[string]string) (*AutocompleteResult, bool, time.Duration) {
 	start := time.Now()
 
 	// 空テキストの場合は空の結果を返す
@@ -169,20 +243,22 @@ func (c *Client) Autocomplete(text string, contextType string) (*AutocompleteRes
 		return c.autocompleteFromDict(text, contextType, start)
 	}
 
-	// SLM APIで補完を生成
+	// SLM APIで補完を生成（suggest LoRA使用、assistant prefill方式）
 	systemPrompt := contextToSystemPrompt(contextType)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	userPrompt, assistantPrefill := buildPrefillPrompt(contextType, text, interviewText, priorSections)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	// コンテキストに応じてmax_tokensを調整
 	maxTokens := 128
 	switch contextType {
 	case "soap_assessment":
-		maxTokens = 64 // A記載は短め（反復防止）
+		maxTokens = 96 // A記載はやや長めの臨床推論まで含む
 	case "soap_objective":
-		maxTokens = 96 // O記載は中程度
+		maxTokens = 96
 	}
-	result, err := c.callChatCompletionWithParams(ctx, systemPrompt, text, maxTokens, 0.5)
+	result, err := c.callChatCompletionWithLoRA(ctx, systemPrompt, userPrompt, assistantPrefill, maxTokens, 0.5, LoRASuggestID)
 	if err != nil {
 		log.Println("SLM autocomplete失敗、モック辞書にフォールバック", "error", err)
 		return c.autocompleteFromDict(text, contextType, start)
@@ -209,6 +285,60 @@ func (c *Client) Autocomplete(text string, contextType string) (*AutocompleteRes
 	for _, prefix := range []string{"S:", "O:", "A:", "P:", "S.", "O.", "A.", "P.", "S：", "O：", "A：", "P："} {
 		completion = strings.TrimPrefix(completion, prefix)
 		completion = strings.TrimSpace(completion)
+	}
+	// meta-commentary（ベースモデル特性の漏れ）を検出してカット
+	// 例: 「※AI として提案した」「これに基づいて、以下の情報を追加して...」
+	// 訓練不足の LoRA では分布外入力時にベースモデル特性が出やすい
+	for _, marker := range []string{
+		"※AI", "※A I", "※上記", "※この", "※なお",
+		"これに基づいて、以下",
+		"以下の情報を追加",
+		"以下のような情報",
+		"以下のような内容",
+		"以下の内容を記載",
+		"以下の点",
+		"上記を参考に",
+		"提案します：",
+		"提案します:",
+		"ご確認ください",
+		"必要に応じて",
+		"AI として",
+		"AIとして",
+		"注意:",
+		"注意：",
+		"以下は",
+		"補足：",
+		"補足:",
+	} {
+		if idx := strings.Index(completion, marker); idx >= 0 {
+			completion = strings.TrimRight(completion[:idx], " 　、。\n\t")
+			break
+		}
+	}
+	// 現セクションを超えて次セクション(O: / A: / P: 等)に進んでしまった応答をカット
+	// 例: S入力中に「症状なし。\n\nO: ...」と返ってきたら「症状なし。」までに切る
+	if currentLetter, _, isSOAP := soapSectionMeta(contextType); isSOAP {
+		nextLetters := []string{"O", "A", "P"}
+		if currentLetter == "O" {
+			nextLetters = []string{"A", "P"}
+		} else if currentLetter == "A" {
+			nextLetters = []string{"P"}
+		} else if currentLetter == "P" {
+			nextLetters = nil
+		}
+		earliest := -1
+		for _, nl := range nextLetters {
+			for _, sep := range []string{"\n" + nl + ":", "\n" + nl + "：", "\n\n" + nl + ":", "\n\n" + nl + "："} {
+				if idx := strings.Index(completion, sep); idx >= 0 {
+					if earliest < 0 || idx < earliest {
+						earliest = idx
+					}
+				}
+			}
+		}
+		if earliest >= 0 {
+			completion = strings.TrimSpace(completion[:earliest])
+		}
 	}
 	// 反復検出: 同じ20文字以上のフレーズが2回以上出たらカット
 	compRunesCheck := []rune(completion)

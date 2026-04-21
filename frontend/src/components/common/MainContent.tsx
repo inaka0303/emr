@@ -13,7 +13,6 @@ interface TabItem {
 
 const tabs: TabItem[] = [
   { id: 'chart', label: 'カルテ' },
-  { id: 'interview', label: '問診' },
   { id: 'history', label: '履歴' },
   { id: 'patient-info', label: '患者情報' },
 ];

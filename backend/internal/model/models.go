@@ -83,11 +83,18 @@ type SocialHistory struct {
 	UpdatedAt      string `json:"updated_at"`
 }
 
-// InterviewNote は問診記録を表す構造体
+// InterviewNote は問診記録（4セクション構造）を表す構造体
+//   RawText       : 問診記録（患者から聞く。主訴・現病歴・既往・家族歴・社会歴・アレルギー）
+//   MedicationList: お薬手帳（持参薬の正確な名前・用量）
+//   ExamFindings  : 診察所見（医師が視触聴診で取る客観的身体所見）
+//   LabResults    : 検査結果（バイタル含む、採血・画像・心電図など）
 type InterviewNote struct {
-	ID             int64  `json:"id"`
-	EncounterID    int64  `json:"encounter_id"`
-	RawText        string `json:"raw_text"`
+	ID             int64           `json:"id"`
+	EncounterID    int64           `json:"encounter_id"`
+	RawText        string          `json:"raw_text"`
+	MedicationList string          `json:"medication_list"`
+	ExamFindings   string          `json:"exam_findings"`
+	LabResults     string          `json:"lab_results"`
 	StructuredData json.RawMessage `json:"structured_data"`
-	CreatedAt      string `json:"created_at"`
+	CreatedAt      string          `json:"created_at"`
 }

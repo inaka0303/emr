@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 
-const BASE_URL = 'http://localhost:8080/api';
+const BASE_URL = '/api';
 
 interface AutocompleteResponse {
   data: {
@@ -18,6 +18,10 @@ interface UseInlineCompletionOptions {
   context: string;
   debounceMs?: number;
   patientId?: number;
+  /** 問診全文（suggest LoRA訓練分布に合わせてSLMに渡す） */
+  interviewText?: string;
+  /** 既記載セクション（キー "S"/"O"/"A" など、現セクションより前のもの） */
+  priorSections?: Record<string, string>;
 }
 
 interface UseInlineCompletionReturn {
@@ -32,7 +36,7 @@ export function useInlineCompletion(
   text: string,
   options: UseInlineCompletionOptions,
 ): UseInlineCompletionReturn {
-  const { context, debounceMs = 300, patientId } = options;
+  const { context, debounceMs = 300, patientId, interviewText, priorSections } = options;
 
   const [completion, setCompletion] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -74,6 +78,10 @@ export function useInlineCompletion(
           text,
           context,
           ...(patientId != null ? { patient_id: patientId } : {}),
+          ...(interviewText ? { interview_text: interviewText } : {}),
+          ...(priorSections && Object.keys(priorSections).length > 0
+            ? { prior_sections: priorSections }
+            : {}),
         }),
         signal: controller.signal,
       })
@@ -103,7 +111,9 @@ export function useInlineCompletion(
         clearTimeout(debounceTimerRef.current);
       }
     };
-  }, [text, context, patientId, debounceMs]);
+    // priorSections は参照が毎回変わりうるのでJSON化して依存を安定させる
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [text, context, patientId, debounceMs, interviewText, JSON.stringify(priorSections ?? {})]);
 
   // クリーンアップ
   useEffect(() => {
