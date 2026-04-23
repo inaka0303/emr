@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -45,10 +46,38 @@ type SOAPDraftHandler struct {
 	client       *slm.Client
 	draftRepo    *repository.SOAPDraftRepository
 	interviewSvc *service.InterviewService
+	encounterSvc *service.EncounterService
+	patientSvc   *service.PatientService
 }
 
-func NewSOAPDraftHandler(client *slm.Client, draftRepo *repository.SOAPDraftRepository, interviewSvc *service.InterviewService) *SOAPDraftHandler {
-	return &SOAPDraftHandler{client: client, draftRepo: draftRepo, interviewSvc: interviewSvc}
+func NewSOAPDraftHandler(
+	client *slm.Client,
+	draftRepo *repository.SOAPDraftRepository,
+	interviewSvc *service.InterviewService,
+	encounterSvc *service.EncounterService,
+	patientSvc *service.PatientService,
+) *SOAPDraftHandler {
+	return &SOAPDraftHandler{
+		client:       client,
+		draftRepo:    draftRepo,
+		interviewSvc: interviewSvc,
+		encounterSvc: encounterSvc,
+		patientSvc:   patientSvc,
+	}
+}
+
+// lookupPatientHeader は encounter_id から患者を解決して「【患者情報】N歳 性別」ヘッダを返す。
+// 失敗時は空文字（注入スキップ）。
+func (h *SOAPDraftHandler) lookupPatientHeader(ctx context.Context, encounterID int64) string {
+	enc, err := h.encounterSvc.GetByID(ctx, encounterID)
+	if err != nil || enc == nil {
+		return ""
+	}
+	p, err := h.patientSvc.GetPatient(ctx, enc.PatientID)
+	if err != nil || p == nil {
+		return ""
+	}
+	return buildPatientHeader(p, enc.EncounterDate)
 }
 
 type soapDraftRequest struct {
@@ -119,6 +148,11 @@ func (h *SOAPDraftHandler) GetOrGenerate(c echo.Context) error {
 	// 4セクション（問診/お薬/所見/検査）を訓練データと同じhybrid formatに結合。
 	// 空のセクションは省略する（訓練データにもセクションが全部揃ってるとは限らないため）。
 	interviewText := buildHybridInput(&notes[0])
+
+	// 患者属性（年齢・性別）を冒頭に注入: SLM が性別を仮定して誤記載する問題を防ぐ
+	if header := h.lookupPatientHeader(ctx, encounterID); header != "" {
+		interviewText = header + "\n" + interviewText
+	}
 
 	suggestion, isMock, latency, err := h.client.GenerateSOAP(ctx, interviewText)
 	if err != nil {
@@ -217,6 +251,11 @@ func (h *SOAPDraftHandler) StreamGenerate(c echo.Context) error {
 	if interviewText == "" {
 		sendEvent("error", map[string]string{"message": "問診/お薬/診察所見/検査結果のいずれにも内容がありません。"})
 		return nil
+	}
+
+	// 患者属性注入（streaming 版でも同じ）
+	if header := h.lookupPatientHeader(ctx, encounterID); header != "" {
+		interviewText = header + "\n" + interviewText
 	}
 
 	suggestion, isMock, latency, genErr := h.client.GenerateSOAPStreaming(ctx, interviewText, func(section, text string) {

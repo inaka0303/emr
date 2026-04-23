@@ -77,11 +77,18 @@ func main() {
 		slmAPIURL = "http://localhost:8000"
 	}
 	slmClient := slm.NewClient(slmAPIURL)
-	slmHandler := handler.NewSLMHandler(slmClient)
+
+	// admission 専用 SLM サーバー（典型: 9B）を環境変数から読み込む
+	// 設定されていれば GenerateAdmissionSummary はこちらへルーティング、未設定なら 4B fallback
+	if admURL := os.Getenv("SLM_ADMISSION_URL"); admURL != "" {
+		slmClient.SetAdmissionServer(admURL)
+	}
+
+	slmHandler := handler.NewSLMHandler(slmClient, encounterSvc, patientSvc)
 
 	// SOAPドラフト（DBキャッシュ付き）
 	soapDraftRepo := repository.NewSOAPDraftRepository(db)
-	soapDraftHandler := handler.NewSOAPDraftHandler(slmClient, soapDraftRepo, interviewSvc)
+	soapDraftHandler := handler.NewSOAPDraftHandler(slmClient, soapDraftRepo, interviewSvc, encounterSvc, patientSvc)
 
 	// Echo初期化
 	e := echo.New()

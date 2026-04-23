@@ -4,18 +4,23 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/example/ehr-demo/internal/service"
 	"github.com/example/ehr-demo/internal/slm"
 	"github.com/labstack/echo/v4"
 )
 
 // SLMHandler はSLM連携APIのHTTPハンドラ
+// encounterSvc / patientSvc は encounter_id から患者属性を解決して
+// prompt に注入するために使う（nil でも動く: 注入スキップ）。
 type SLMHandler struct {
-	client *slm.Client
+	client       *slm.Client
+	encounterSvc *service.EncounterService
+	patientSvc   *service.PatientService
 }
 
 // NewSLMHandler は新しいSLMHandlerを生成する
-func NewSLMHandler(client *slm.Client) *SLMHandler {
-	return &SLMHandler{client: client}
+func NewSLMHandler(client *slm.Client, encounterSvc *service.EncounterService, patientSvc *service.PatientService) *SLMHandler {
+	return &SLMHandler{client: client, encounterSvc: encounterSvc, patientSvc: patientSvc}
 }
 
 // slmMeta はSLMレスポンスのメタ情報
@@ -32,8 +37,10 @@ type slmResponse struct {
 }
 
 // suggestSOAPRequest はSOAP提案リクエスト
+// EncounterID が指定されれば患者属性（年齢・性別）を自動で prompt 先頭に注入する。
 type suggestSOAPRequest struct {
 	InterviewText string `json:"interview_text"`
+	EncounterID  int64  `json:"encounter_id,omitempty"`
 }
 
 // suggestSummaryRequest はサマリー提案リクエスト
@@ -94,7 +101,18 @@ func (h *SLMHandler) SuggestAdmissionSummary(c echo.Context) error {
 		})
 	}
 
-	summary, isMock, latency, err := h.client.GenerateAdmissionSummary(c.Request().Context(), req.InterviewText)
+	interviewText := req.InterviewText
+	if req.EncounterID > 0 && h.encounterSvc != nil && h.patientSvc != nil {
+		if enc, err := h.encounterSvc.GetByID(c.Request().Context(), req.EncounterID); err == nil && enc != nil {
+			if p, err := h.patientSvc.GetPatient(c.Request().Context(), enc.PatientID); err == nil && p != nil {
+				if header := buildPatientHeader(p, enc.EncounterDate); header != "" {
+					interviewText = header + "\n" + interviewText
+				}
+			}
+		}
+	}
+
+	summary, isMock, latency, err := h.client.GenerateAdmissionSummary(c.Request().Context(), interviewText)
 	if err != nil {
 		slog.Error("入院時サマリ生成エラー", "error", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{

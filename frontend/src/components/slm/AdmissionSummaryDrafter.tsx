@@ -32,6 +32,7 @@ export default function AdmissionSummaryDrafter({
   const [finalText, setFinalText] = useState('');
   const [status, setStatus] = useState<Status>('loading-cache');
   const [meta, setMeta] = useState<{ latency_ms?: number; is_mock?: boolean } | null>(null);
+  const [server, setServer] = useState<'9B' | '4B-fallback' | undefined>(undefined);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
 
@@ -41,6 +42,7 @@ export default function AdmissionSummaryDrafter({
     setDraftText('');
     setFinalText('');
     setMeta(null);
+    setServer(undefined);
     setErrorMsg(null);
     setSaveState('idle');
     fetchedRef.current = null;
@@ -62,10 +64,11 @@ export default function AdmissionSummaryDrafter({
         if (fetchedRef.current === encounterId) return;
         fetchedRef.current = encounterId;
         setStatus('generating');
-        return suggestAdmissionSummary(interviewText)
+        return suggestAdmissionSummary(interviewText, encounterId)
           .then((sres) => {
             setDraftText(sres.data.text ?? '');
             setMeta({ latency_ms: sres.meta.latency_ms, is_mock: sres.meta.is_mock });
+            setServer(sres.data.server);
             setStatus(sres.data.text ? 'draft' : 'manual');
           })
           .catch((err: unknown) => {
@@ -80,10 +83,11 @@ export default function AdmissionSummaryDrafter({
           return;
         }
         setStatus('generating');
-        suggestAdmissionSummary(interviewText)
+        suggestAdmissionSummary(interviewText, encounterId)
           .then((sres) => {
             setDraftText(sres.data.text ?? '');
             setMeta({ latency_ms: sres.meta.latency_ms, is_mock: sres.meta.is_mock });
+            setServer(sres.data.server);
             setStatus(sres.data.text ? 'draft' : 'manual');
           })
           .catch((err: unknown) => {
@@ -130,6 +134,9 @@ export default function AdmissionSummaryDrafter({
             {status === 'draft' && meta?.latency_ms != null && (
               <span className="ml-2 text-amber-600">{(meta.latency_ms / 1000).toFixed(1)}秒で生成完了</span>
             )}
+            {server === '9B' && status === 'draft' && (
+              <span className="ml-2 text-emerald-600 font-medium">9B</span>
+            )}
           </p>
         </div>
         {status === 'draft' && (
@@ -151,6 +158,19 @@ export default function AdmissionSummaryDrafter({
       </header>
 
       <div className="p-4 space-y-3">
+        {server === '4B-fallback' && (status === 'draft' || status === 'accepted') && (
+          <div className="px-3 py-2 bg-amber-100 border border-amber-400 rounded text-xs text-amber-900 flex items-start gap-2">
+            <span className="font-bold mt-0.5">⚠</span>
+            <div>
+              <div className="font-medium">品質低下モード（4B admission LoRA）</div>
+              <div className="mt-0.5 text-amber-800">
+                9B admission サーバーが未接続のため、軽量な4Bモデルで生成しました。
+                内容の精度は本番（9B）より劣る可能性があります。9Bサーバーを起動して再生成を推奨します。
+              </div>
+            </div>
+          </div>
+        )}
+
         {status === 'loading-cache' && (
           <div className="text-sm text-gray-400">読み込み中...</div>
         )}

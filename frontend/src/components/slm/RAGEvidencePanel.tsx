@@ -5,6 +5,7 @@ interface RAGResult {
   parent_id: string;
   text: string;
   title: string;
+  publication_year?: number | null;
   score: number;
   child_hits: number;
 }
@@ -106,6 +107,9 @@ export default function RAGEvidencePanel({ query, label = '根拠を確認' }: R
                     <div className="flex-1 min-w-0">
                       <div className="text-xs font-medium text-teal-900 truncate">
                         {i + 1}. {r.title || '（タイトル不明）'}
+                        {r.publication_year && (
+                          <span className="ml-1 text-teal-600 font-normal">（{r.publication_year}年）</span>
+                        )}
                       </div>
                       <div className="text-xs text-gray-500 mt-0.5">
                         score={r.score.toFixed(2)} / hits={r.child_hits}

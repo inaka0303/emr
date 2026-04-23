@@ -28,8 +28,16 @@ func parseSOAPFromText(text string) *SOAPSuggestion {
 	}
 
 	// セクションマーカーの検出パターン（長い順で検索）
+	// 注: cleanModelOutput は既に `**` / `###` → `■` / `---` を除去・置換しているため、
+	//     bold系マーカーも残留ケースとして残す + cleaned出力向けマーカーを足す
 	markers := []string{
-		// 太字マークダウン + 日本語ラベル
+		// cleaned出力: `■ S (Subjective)` 等の形式（post-process後）
+		"■ S (Subjective)", "■ O (Objective)", "■ A (Assessment)", "■ P (Plan)",
+		"■ S（主観的情報）", "■ O（客観的情報）", "■ A（評価）", "■ P（計画）",
+		"■ S", "■ O", "■ A", "■ P",
+		// 英語フル表記
+		"S (Subjective)", "O (Objective)", "A (Assessment)", "P (Plan)",
+		// 太字マークダウン + 日本語ラベル (未cleanの保険)
 		"**S（主観的情報）**", "**O（客観的情報）**", "**A（評価）**", "**P（計画）**",
 		"**S（主観）**", "**O（客観）**", "**A（アセスメント）**", "**P（プラン）**",
 		// 太字マークダウン
@@ -41,6 +49,8 @@ func parseSOAPFromText(text string) *SOAPSuggestion {
 		// 括弧 + ラベル
 		"S（主観的情報）:", "O（客観的情報）:", "A（評価）:", "P（計画）:",
 		"S（主観的情報）", "O（客観的情報）", "A（評価）", "P（計画）",
+		// 半角括弧 prefix（`S (xxx)` 型を細かく拾う）
+		"S (", "O (", "A (", "P (",
 		// 基本パターン
 		"S:", "S：", "S)", "S（", "S.",
 		"O:", "O：", "O)", "O（", "O.",
