@@ -98,9 +98,18 @@ func main() {
 
 	slmHandler := handler.NewSLMHandler(slmClient, encounterSvc, patientSvc)
 
+	// PatientHistoryService (過去受診サマリ、cross-encounter 要約)
+	// ENABLE_CROSS_ENCOUNTER_SUMMARY=false で明示的に無効化可能、
+	// デフォルトは有効 (nil なら handler 側で no-op になるので常に渡して安全)。
+	var historySvc *service.PatientHistoryService
+	if os.Getenv("ENABLE_CROSS_ENCOUNTER_SUMMARY") != "false" {
+		historySvc = service.NewPatientHistoryService(encounterSvc, soapSvc, interviewSvc)
+		slog.Info("cross-encounter 要約 有効化")
+	}
+
 	// SOAPドラフト（DBキャッシュ付き）
 	soapDraftRepo := repository.NewSOAPDraftRepository(db)
-	soapDraftHandler := handler.NewSOAPDraftHandler(slmClient, soapDraftRepo, interviewSvc, encounterSvc, patientSvc)
+	soapDraftHandler := handler.NewSOAPDraftHandler(slmClient, soapDraftRepo, interviewSvc, encounterSvc, patientSvc, historySvc)
 
 	// Echo初期化
 	e := echo.New()

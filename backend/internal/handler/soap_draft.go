@@ -49,6 +49,7 @@ type SOAPDraftHandler struct {
 	interviewSvc *service.InterviewService
 	encounterSvc *service.EncounterService
 	patientSvc   *service.PatientService
+	historySvc   *service.PatientHistoryService // optional, nil なら過去履歴サマリ無効
 }
 
 func NewSOAPDraftHandler(
@@ -57,6 +58,7 @@ func NewSOAPDraftHandler(
 	interviewSvc *service.InterviewService,
 	encounterSvc *service.EncounterService,
 	patientSvc *service.PatientService,
+	historySvc *service.PatientHistoryService,
 ) *SOAPDraftHandler {
 	return &SOAPDraftHandler{
 		client:       client,
@@ -64,7 +66,27 @@ func NewSOAPDraftHandler(
 		interviewSvc: interviewSvc,
 		encounterSvc: encounterSvc,
 		patientSvc:   patientSvc,
+		historySvc:   historySvc,
 	}
+}
+
+// prependCrossEncounterHistory は historySvc が有効な場合、現在生成中の encounter より前の
+// 過去履歴サマリを interview_text 先頭に足して返す。historySvc nil or 履歴無しなら no-op。
+// 山本隆型の多 encounter 患者で現在 SOAP に過去方針の文脈を載せるための scaffold 実装。
+func (h *SOAPDraftHandler) prependCrossEncounterHistory(ctx context.Context, encounterID int64, interviewText string) string {
+	if h.historySvc == nil {
+		return interviewText
+	}
+	enc, err := h.encounterSvc.GetByID(ctx, encounterID)
+	if err != nil || enc == nil {
+		return interviewText
+	}
+	summary, err := h.historySvc.BuildCrossEncounterSummary(ctx, enc.PatientID, encounterID)
+	if err != nil || summary == "" {
+		return interviewText
+	}
+	slog.Info("cross-encounter 要約 prepend", "encounter_id", encounterID, "summary_len", len([]rune(summary)))
+	return summary + "\n" + interviewText
 }
 
 // lookupPatientHeader は encounter_id から患者を解決して「【患者情報】N歳 性別」ヘッダを返す。
@@ -154,6 +176,9 @@ func (h *SOAPDraftHandler) GetOrGenerate(c echo.Context) error {
 	if header := h.lookupPatientHeader(ctx, encounterID); header != "" {
 		interviewText = header + "\n" + interviewText
 	}
+
+	// cross-encounter 要約を prepend（historySvc 有効時、過去受診があれば）
+	interviewText = h.prependCrossEncounterHistory(ctx, encounterID, interviewText)
 
 	suggestion, isMock, latency, err := h.client.GenerateSOAP(ctx, interviewText)
 	if err != nil {
@@ -281,6 +306,9 @@ func (h *SOAPDraftHandler) StreamGenerate(c echo.Context) error {
 	if header := h.lookupPatientHeader(genCtx, encounterID); header != "" {
 		interviewText = header + "\n" + interviewText
 	}
+
+	// cross-encounter 要約 prepend (streaming 版でも有効化)
+	interviewText = h.prependCrossEncounterHistory(genCtx, encounterID, interviewText)
 
 	// 重要: genCtx を GenerateSOAPStreaming に渡す → client 切断で止まらない
 	suggestion, isMock, latency, genErr := h.client.GenerateSOAPStreaming(genCtx, interviewText, func(section, text string) {
