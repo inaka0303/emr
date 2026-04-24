@@ -247,18 +247,23 @@ func (c *Client) Autocomplete(text, contextType, interviewText string, priorSect
 	systemPrompt := contextToSystemPrompt(contextType)
 	userPrompt, assistantPrefill := buildPrefillPrompt(contextType, text, interviewText, priorSections)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	// timeout: cache miss 型の初回リクエストは M3 実測 6-9s、長 interview では 15s を超える
+	// ケースがあるため 30s に延長（field notes 2026-04-23 による）。
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	// コンテキストに応じてmax_tokensを調整
-	maxTokens := 128
+	// インライン補完は「続きの短い 1 文」が目的なので 48 を基本値に圧縮。
+	// A 記載のみ臨床推論が長くなりがちなので 96 を維持。
+	maxTokens := 48
 	switch contextType {
 	case "soap_assessment":
 		maxTokens = 96 // A記載はやや長めの臨床推論まで含む
 	case "soap_objective":
-		maxTokens = 96
+		maxTokens = 64
 	}
-	result, err := c.callChatCompletionWithLoRA(ctx, systemPrompt, userPrompt, assistantPrefill, maxTokens, 0.5, LoRASuggestID)
+	// temperature は 0.5 → 0.3 に下げて決定的に。補完 UX では一貫性を優先。
+	result, err := c.callChatCompletionWithLoRA(ctx, systemPrompt, userPrompt, assistantPrefill, maxTokens, 0.3, LoRASuggestID)
 	if err != nil {
 		log.Println("SLM autocomplete失敗、モック辞書にフォールバック", "error", err)
 		return c.autocompleteFromDict(text, contextType, start)
@@ -289,6 +294,9 @@ func (c *Client) Autocomplete(text, contextType, interviewText string, priorSect
 	// meta-commentary（ベースモデル特性の漏れ）を検出してカット
 	// 例: 「※AI として提案した」「これに基づいて、以下の情報を追加して...」
 	// 訓練不足の LoRA では分布外入力時にベースモデル特性が出やすい
+	// 2026-04-23 M3 field notes で発見された新パターン:
+	//   「（問診記録の冒頭にある〜そのまま記載するのが適切です」
+	//   「電子カルテでは、問診で確認した主観的情報として〜」
 	for _, marker := range []string{
 		"※AI", "※A I", "※上記", "※この", "※なお",
 		"これに基づいて、以下",
@@ -309,6 +317,40 @@ func (c *Client) Autocomplete(text, contextType, interviewText string, priorSect
 		"以下は",
 		"補足：",
 		"補足:",
+		// 2026-04-23 M3 field notes: メタ説明の丸括弧ブロック先頭を捕捉
+		"（問診記録の",
+		"（以下の",
+		"（電子カルテでは",
+		"（この記載は",
+		"記載するのが適切",
+		"電子カルテでは",
+		"そのまま記載する",
+		"簡潔に記録します",
+		"適切に記載します",
+		"■ 提案",
+		// 2026-04-24 短入力メタ化対策:
+		// `動悸` → `「動悸」が主訴として記録されましたね...■ パターン 1:`
+		// `胸痛` → `「胸痛」は非常に一般的な主訴ですが...`
+		"が主訴として記録されましたね",
+		"として記録されましたね",
+		"記録されましたね",
+		"非常に一般的な主訴",
+		"提案させていただきます",
+		"させていただきます",
+		"詳細な記述が変わる",
+		"いくつかのパターン",
+		"状況に合わせて調整",
+		"ご使用ください",
+		"患者様の状態",
+		"■ パターン",
+		"パターン 1",
+		"パターン1",
+		"パターン2",
+		"パターン3",
+		// model が入力を「」で囲んで meta 説明するパターン
+		"」が主訴",
+		"」は非常に",
+		"」について",
 	} {
 		if idx := strings.Index(completion, marker); idx >= 0 {
 			completion = strings.TrimRight(completion[:idx], " 　、。\n\t")
@@ -340,6 +382,48 @@ func (c *Client) Autocomplete(text, contextType, interviewText string, priorSect
 			completion = strings.TrimSpace(completion[:earliest])
 		}
 	}
+	// メタ応答の全面破棄: marker cut 後でも残骸が意味をなさないケース。
+	// 2026-04-24: 「動悸」→「『動悸』が主訴として記録されましたね」等の短入力メタ化で
+	// marker cut 後 `「動悸` という無意味な残骸が出る。こういうのは空返しが良い。
+	//
+	// 判定:
+	//   (a) strongMeta (丁寧語・AI 自己言及系) がひとつでも含まれる → 破棄
+	//   (b) 冒頭が `「` や `『` で始まる + 続きに意味のある clinical 表現が無い → 破棄
+	// 単独の `「` ` 」` は real clinical text でも使われる（例: 「労作時」の胸痛）ので weak 扱い。
+	strongMetaSignatures := []string{
+		"患者様",
+		"いただきます",
+		"ご使用",
+		"ご提案",
+		"ご参照",
+		"アシスタント",
+		"記録されました",
+		"検討くださ",
+		"お役に立て",
+		"いくつかのパターン",
+		"状況に合わせて",
+		"ご確認くださ",
+	}
+	for _, sig := range strongMetaSignatures {
+		if strings.Contains(completion, sig) {
+			completion = ""
+			break
+		}
+	}
+	// 残骸判定: 冒頭が `「` or `『` で、かつ短すぎる（5 文字以内）→ 破棄
+	if completion != "" {
+		if r := []rune(completion); len(r) <= 5 && (strings.HasPrefix(completion, "「") || strings.HasPrefix(completion, "『")) {
+			completion = ""
+		}
+	}
+	// 入力が短い (< 6 文字) かつ completion が `「` で始まる → 入力を「」で引用する meta パターン
+	// 例: 入力「動悸」→ completion「『動悸』の症状」。clinical 続きではないので破棄。
+	if completion != "" {
+		if len([]rune(text)) < 6 && (strings.HasPrefix(completion, "「") || strings.HasPrefix(completion, "『")) {
+			completion = ""
+		}
+	}
+
 	// 反復検出: 同じ20文字以上のフレーズが2回以上出たらカット
 	compRunesCheck := []rune(completion)
 	if len(compRunesCheck) > 40 {

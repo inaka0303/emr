@@ -30,6 +30,12 @@ var (
 	reSectionMarkerAtLine = regexp.MustCompile(`(?m)^\s*(?:\*{0,2}[SOAP]\*{0,2}[\s:：\)\.]|■\s*[SOAP]|#{1,6}\s+[SOAP]|【[SOAP])`)
 	// 丸括弧注釈 ※系: 「（※〜）」を削除（1行）
 	reParenNote = regexp.MustCompile(`（※[^）\n]{0,300}）`)
+	// 丸括弧メタ説明ブロック（複数行対応）: 池田里奈型
+	//   （問診記録の冒頭にある「自覚症状なし」をそのまま記載するのが適切です。
+	//    電子カルテでは、問診で確認した主観的情報として簡潔に記録します。）
+	// キーワード「記載するのが適切／電子カルテでは／カルテには／記録します／参考まで／推奨されます／を意味します／注意が必要」を
+	// 含む (...) ブロックを丸ごと削除。※無し版（reParenNote でカバーされない）を想定。
+	reMetaParenBlock = regexp.MustCompile(`（[^）]{0,600}?(?:記載するのが適切|電子カルテでは|カルテには|記録します|参考まで|推奨されます|を意味します|注意が必要|適切に記載|を表します|意味しています)[^）]{0,600}?）`)
 	// 太字 **xxx** → xxx
 	reBold = regexp.MustCompile(`\*\*([^*\n]+?)\*\*`)
 	// Markdown ヘッダー `#{1,6} xxx` → ■ xxx (SOAP/admission 共通の推奨形式)
@@ -123,8 +129,9 @@ func cleanModelOutput(s string) string {
 	t = reExplanatoryEnd.ReplaceAllString(t, "")
 	// 4. 前置き文
 	t = rePreamble.ReplaceAllString(t, "")
-	// 5. （※〜）注釈
+	// 5. （※〜）注釈 / 丸括弧メタ説明ブロック（複数行）
 	t = reParenNote.ReplaceAllString(t, "")
+	t = reMetaParenBlock.ReplaceAllString(t, "")
 	// 6. Markdown変換
 	t = reMdHeader.ReplaceAllStringFunc(t, func(m string) string {
 		sub := reMdHeader.FindStringSubmatch(m)
@@ -204,11 +211,15 @@ type LoRAAdapterConfig struct {
 }
 
 // ChatCompletionRequest はOpenAI互換リクエスト
+// RepeatPenalty: llama.cpp の repeat_penalty (1.0 = 無効)。
+// degeneration（同一フレーズ反復ループ）対策で 1.1 程度を推奨。
+// 訓練分布から外れた短入力で A/P が無限ループする問題（M3 field notes 2026-04-23）の対処。
 type ChatCompletionRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	Temperature float64   `json:"temperature"`
-	MaxTokens   int       `json:"max_tokens"`
+	Model         string    `json:"model"`
+	Messages      []Message `json:"messages"`
+	Temperature   float64   `json:"temperature"`
+	MaxTokens     int       `json:"max_tokens"`
+	RepeatPenalty float64   `json:"repeat_penalty,omitempty"`
 }
 
 // Message はチャットメッセージ
@@ -732,10 +743,11 @@ func (c *Client) callChatCompletionWithLoRA(ctx context.Context, systemPrompt, u
 	}
 
 	reqBody := ChatCompletionRequest{
-		Model:       modelName,
-		Messages:    messages,
-		Temperature: temperature,
-		MaxTokens:   maxTokens,
+		Model:         modelName,
+		Messages:      messages,
+		Temperature:   temperature,
+		MaxTokens:     maxTokens,
+		RepeatPenalty: 1.1, // degeneration 対策（1.0=無効、1.1 が穏当）
 	}
 
 	bodyBytes, err := json.Marshal(reqBody)
