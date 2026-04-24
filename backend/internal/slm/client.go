@@ -481,9 +481,16 @@ func (c *Client) GenerateSOAP(ctx context.Context, interviewText string) (*SOAPS
 	// parser が全セクション埋められなかった場合のみ fallback（片側だけ欠けたら fallback）
 	if suggestion.Subjective == "" || suggestion.Objective == "" ||
 		suggestion.Assessment == "" || suggestion.Plan == "" {
+		// 2026-04-24: raw output を dump して parse 失敗の原因調査を可能にする
+		rawPreview := result
+		if len([]rune(rawPreview)) > 400 {
+			rawPreview = string([]rune(rawPreview)[:400]) + "...(truncated)"
+		}
 		slog.Warn("SOAPパース不完全、4-call suggest にフォールバック",
 			"has_s", suggestion.Subjective != "", "has_o", suggestion.Objective != "",
-			"has_a", suggestion.Assessment != "", "has_p", suggestion.Plan != "")
+			"has_a", suggestion.Assessment != "", "has_p", suggestion.Plan != "",
+			"raw_preview", rawPreview,
+			"raw_len", len([]rune(result)))
 		return c.generateSOAPFallback(ctx, interviewText, start)
 	}
 
