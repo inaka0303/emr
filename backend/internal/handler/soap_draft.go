@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/example/ehr-demo/internal/model"
 	"github.com/example/ehr-demo/internal/repository"
@@ -190,6 +191,14 @@ func (h *SOAPDraftHandler) GetOrGenerate(c echo.Context) error {
 // 各セクション完了ごとに "event: section" で送出し、全完了時に "event: done" を送る。
 // キャッシュヒット時は瞬時に全セクションを流し出して完了する。
 // POST /api/encounters/:id/soap-draft/stream   body: {"force": bool}
+//
+// 2026-04-24 M3 field notes 対応: client disconnect (frontend の S 却下・編集開始で
+// EventSource が閉じる) で generation が止まる副作用を解消。
+// - generation は `context.Background()` ベースの genCtx で走らせ、client の切断に
+//   影響されない。HTTP 側の ctx cancel が llama-server 呼出を止めないようにする。
+// - sendEvent は client disconnect 検出時は silent skip し、generation は続行。
+// - 全 4 セクション完了後は (client 切断済みでも) DB キャッシュに必ず保存する。
+//   → frontend は再度 fetch すればキャッシュから同じ結果を得られる（部分承認モデル）。
 func (h *SOAPDraftHandler) StreamGenerate(c echo.Context) error {
 	encounterID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
@@ -211,17 +220,31 @@ func (h *SOAPDraftHandler) StreamGenerate(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "streaming not supported"})
 	}
 
+	// clientCtx: frontend EventSource の接続状態を示す。disconnect で Done する。
+	// genCtx: generation 専用。client disconnect では cancel されない。
+	//         120s タイムアウトのみ（4 セクション × 15-25s 想定で余裕を持たせる）。
+	clientCtx := c.Request().Context()
+	genCtx, genCancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer genCancel()
+
 	sendEvent := func(event string, data interface{}) {
+		// client disconnect 検出時は skip（generation は継続）
+		if clientCtx.Err() != nil {
+			return
+		}
 		b, _ := json.Marshal(data)
-		_, _ = fmt.Fprintf(w.Writer, "event: %s\ndata: %s\n\n", event, b)
+		_, writeErr := fmt.Fprintf(w.Writer, "event: %s\ndata: %s\n\n", event, b)
+		if writeErr != nil {
+			// 書き込み失敗 = client 切断済み。以降の event は silent skip される。
+			return
+		}
 		flusher.Flush()
 	}
 
-	ctx := c.Request().Context()
-
 	// キャッシュヒット: 4セクションを即時に流し出して完了
 	if !req.Force {
-		if d, err := h.draftRepo.GetByEncounterID(ctx, encounterID); err == nil {
+		// キャッシュ読み取りは clientCtx で OK（短時間）
+		if d, err := h.draftRepo.GetByEncounterID(clientCtx, encounterID); err == nil {
 			for _, s := range []struct {
 				sec, text string
 			}{
@@ -238,7 +261,8 @@ func (h *SOAPDraftHandler) StreamGenerate(c echo.Context) error {
 	}
 
 	// キャッシュミス: SLM でセクション逐次生成
-	notes, err := h.interviewSvc.ListByEncounterID(ctx, encounterID)
+	// 以下のリソースアクセスは client 切断でも進行させるため genCtx を使う。
+	notes, err := h.interviewSvc.ListByEncounterID(genCtx, encounterID)
 	if err != nil {
 		sendEvent("error", map[string]string{"message": "問診取得エラー"})
 		return nil
@@ -254,11 +278,12 @@ func (h *SOAPDraftHandler) StreamGenerate(c echo.Context) error {
 	}
 
 	// 患者属性注入（streaming 版でも同じ）
-	if header := h.lookupPatientHeader(ctx, encounterID); header != "" {
+	if header := h.lookupPatientHeader(genCtx, encounterID); header != "" {
 		interviewText = header + "\n" + interviewText
 	}
 
-	suggestion, isMock, latency, genErr := h.client.GenerateSOAPStreaming(ctx, interviewText, func(section, text string) {
+	// 重要: genCtx を GenerateSOAPStreaming に渡す → client 切断で止まらない
+	suggestion, isMock, latency, genErr := h.client.GenerateSOAPStreaming(genCtx, interviewText, func(section, text string) {
 		sendEvent("section", map[string]string{"section": section, "text": text})
 	})
 	if genErr != nil {
@@ -267,8 +292,10 @@ func (h *SOAPDraftHandler) StreamGenerate(c echo.Context) error {
 	}
 
 	// DBキャッシュに保存（モックでない場合）
+	// 重要: client disconnect でも保存するため genCtx を使う。
+	// 保存しておけば frontend は再度 GET /api/encounters/:id/soap-draft でキャッシュ取得可能。
 	if !isMock && suggestion != nil {
-		_ = h.draftRepo.Upsert(ctx, &repository.SOAPDraft{
+		_ = h.draftRepo.Upsert(genCtx, &repository.SOAPDraft{
 			EncounterID:  encounterID,
 			Subjective:   suggestion.Subjective,
 			Objective:    suggestion.Objective,
