@@ -202,6 +202,9 @@ type Client struct {
 	activeLoRAID int
 	nLoras       int // /lora-adapters でリセットすべき LoRA 総数
 	admClient    *Client
+	// rag: 設定されていれば GenerateSOAP / GenerateAdmissionSummary 時に自動注入。
+	// nil なら RAG 無しで従来通り動作する。SetRAGClient() で設定する。
+	rag *RAGClient
 }
 
 // LoRAAdapterConfig はglobal scale切替のリクエストboy要素
@@ -357,6 +360,19 @@ func (c *Client) SetAdmissionServer(baseURL string) {
 	c.admClient = adm
 }
 
+// SetRAGClient は RAG 検索サーバーを SLM Client に紐付ける。
+// 以降、GenerateSOAP / GenerateAdmissionSummary 呼出時に interview_text を query として
+// RAG を叩き、上位 3 件の snippet を system prompt に自動注入する。
+// baseURL 空の場合は nil をセット = 機能無効化。
+func (c *Client) SetRAGClient(baseURL string) {
+	if baseURL == "" {
+		c.rag = nil
+		return
+	}
+	c.rag = NewRAGClient(baseURL)
+	slog.Info("RAG 自動注入 有効化", "url", baseURL)
+}
+
 // AdmissionClientHealthy は admission サーバーが設定済みかつ疎通可能かを返す。
 // nil Client や未設定なら false。
 func (c *Client) AdmissionClientHealthy() bool {
@@ -469,6 +485,11 @@ func (c *Client) GenerateSOAP(ctx context.Context, interviewText string) (*SOAPS
 	}
 
 	systemPrompt := "あなたは日本語の電子カルテ記載を支援する医療AIアシスタントです。問診情報からSOAP形式のカルテ記載を提案します。"
+	// RAG 自動注入: interview を query としてガイドライン上位 3 件を system prompt に付加。
+	// 4B の薬剤ハルシネーション対策（M3 field notes 2026-04-23 B アーキ改善）。
+	if snippet := c.tryAugmentWithRAG(ctx, interviewText); snippet != "" {
+		systemPrompt += snippet
+	}
 	userPrompt := interviewText + "\n\n上記の情報から、SOAP形式のカルテ記載を提案してください。"
 
 	result, err := c.callChatCompletionWithLoRA(ctx, systemPrompt, userPrompt, "", 1536, 0.3, LoRASOAPFullID)
@@ -631,6 +652,10 @@ func (c *Client) GenerateAdmissionSummary(ctx context.Context, interviewText str
 
 	// admission_summary LoRAの訓練時と一致するシステムプロンプト
 	systemPrompt := "あなたは日本語の電子カルテ記載を支援する医療AIアシスタントです。詳細な問診・検査情報から入院時サマリを作成します。"
+	// RAG 自動注入: 入院時サマリでも薬剤・治療プラン記載があるので同様に注入。
+	if snippet := c.tryAugmentWithRAG(ctx, interviewText); snippet != "" {
+		systemPrompt += snippet
+	}
 
 	// 専用 9B admission サーバーがあればそちらを試す
 	// HTTP レベルで失敗した場合は即座に 4B fallback で retry（backgroundHealthCheck を待たない）

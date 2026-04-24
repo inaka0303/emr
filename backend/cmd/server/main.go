@@ -84,6 +84,18 @@ func main() {
 		slmClient.SetAdmissionServer(admURL)
 	}
 
+	// RAG 自動注入用 URL。設定されていれば GenerateSOAP / GenerateAdmissionSummary 時に
+	// interview_text を query として RAG を叩き、上位 3 件の snippet を system prompt に
+	// 自動注入する。デフォルト: http://localhost:8082 (RAG_API_URL env でオーバーライド可)。
+	// 無効化したい場合は RAG_API_URL= (空文字) を設定する。
+	ragURL := os.Getenv("RAG_API_URL")
+	if _, explicit := os.LookupEnv("RAG_API_URL"); !explicit {
+		ragURL = "http://localhost:8082"
+	}
+	if ragURL != "" {
+		slmClient.SetRAGClient(ragURL)
+	}
+
 	slmHandler := handler.NewSLMHandler(slmClient, encounterSvc, patientSvc)
 
 	// SOAPドラフト（DBキャッシュ付き）
