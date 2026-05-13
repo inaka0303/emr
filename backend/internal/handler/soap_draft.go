@@ -50,6 +50,7 @@ type SOAPDraftHandler struct {
 	encounterSvc *service.EncounterService
 	patientSvc   *service.PatientService
 	historySvc   *service.PatientHistoryService // optional, nil なら過去履歴サマリ無効
+	experiment   *repository.ExperimentRepository
 }
 
 func NewSOAPDraftHandler(
@@ -68,6 +69,10 @@ func NewSOAPDraftHandler(
 		patientSvc:   patientSvc,
 		historySvc:   historySvc,
 	}
+}
+
+func (h *SOAPDraftHandler) SetExperimentRepository(repo *repository.ExperimentRepository) {
+	h.experiment = repo
 }
 
 // prependCrossEncounterHistory は historySvc が有効な場合、現在生成中の encounter より前の
@@ -134,10 +139,21 @@ func (h *SOAPDraftHandler) GetOrGenerate(c echo.Context) error {
 	_ = c.Bind(&req)
 
 	ctx := c.Request().Context()
+	attempt, err := ensureExperimentAIAllowed(c, h.experiment, encounterID)
+	if err != nil {
+		return experimentGuardResponse(c, err)
+	}
 
 	// キャッシュを確認
 	if !req.Force {
 		if d, err := h.draftRepo.GetByEncounterID(ctx, encounterID); err == nil {
+			if attempt != nil {
+				_ = h.experiment.RecordEvent(ctx, attempt.AttemptID, "soap_draft_cache_hit", map[string]interface{}{
+					"encounter_id":  encounterID,
+					"generation_ms": d.GenerationMS,
+					"model":         d.Model,
+				})
+			}
 			return c.JSON(http.StatusOK, soapDraftResponse{
 				Data: slm.SOAPSuggestion{
 					Subjective: d.Subjective,
@@ -200,6 +216,15 @@ func (h *SOAPDraftHandler) GetOrGenerate(c echo.Context) error {
 			slog.Warn("SOAPドラフトキャッシュ保存失敗（続行）", "error", err)
 		}
 	}
+	if attempt != nil {
+		_ = h.experiment.AddAIUsage(ctx, attempt.AttemptID, latency.Milliseconds(), 1)
+		_ = h.experiment.RecordEvent(ctx, attempt.AttemptID, "soap_draft_generated", map[string]interface{}{
+			"encounter_id": encounterID,
+			"latency_ms":   latency.Milliseconds(),
+			"is_mock":      isMock,
+			"force":        req.Force,
+		})
+	}
 
 	return c.JSON(http.StatusOK, soapDraftResponse{
 		Data: *suggestion,
@@ -219,11 +244,11 @@ func (h *SOAPDraftHandler) GetOrGenerate(c echo.Context) error {
 //
 // 2026-04-24 M3 field notes 対応: client disconnect (frontend の S 却下・編集開始で
 // EventSource が閉じる) で generation が止まる副作用を解消。
-// - generation は `context.Background()` ベースの genCtx で走らせ、client の切断に
-//   影響されない。HTTP 側の ctx cancel が llama-server 呼出を止めないようにする。
-// - sendEvent は client disconnect 検出時は silent skip し、generation は続行。
-// - 全 4 セクション完了後は (client 切断済みでも) DB キャッシュに必ず保存する。
-//   → frontend は再度 fetch すればキャッシュから同じ結果を得られる（部分承認モデル）。
+//   - generation は `context.Background()` ベースの genCtx で走らせ、client の切断に
+//     影響されない。HTTP 側の ctx cancel が llama-server 呼出を止めないようにする。
+//   - sendEvent は client disconnect 検出時は silent skip し、generation は続行。
+//   - 全 4 セクション完了後は (client 切断済みでも) DB キャッシュに必ず保存する。
+//     → frontend は再度 fetch すればキャッシュから同じ結果を得られる（部分承認モデル）。
 func (h *SOAPDraftHandler) StreamGenerate(c echo.Context) error {
 	encounterID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
@@ -232,6 +257,11 @@ func (h *SOAPDraftHandler) StreamGenerate(c echo.Context) error {
 
 	var req soapDraftRequest
 	_ = c.Bind(&req)
+
+	attempt, err := ensureExperimentAIAllowed(c, h.experiment, encounterID)
+	if err != nil {
+		return experimentGuardResponse(c, err)
+	}
 
 	w := c.Response()
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -270,6 +300,13 @@ func (h *SOAPDraftHandler) StreamGenerate(c echo.Context) error {
 	if !req.Force {
 		// キャッシュ読み取りは clientCtx で OK（短時間）
 		if d, err := h.draftRepo.GetByEncounterID(clientCtx, encounterID); err == nil {
+			if attempt != nil {
+				_ = h.experiment.RecordEvent(clientCtx, attempt.AttemptID, "soap_draft_stream_cache_hit", map[string]interface{}{
+					"encounter_id":  encounterID,
+					"generation_ms": d.GenerationMS,
+					"model":         d.Model,
+				})
+			}
 			for _, s := range []struct {
 				sec, text string
 			}{
@@ -331,6 +368,15 @@ func (h *SOAPDraftHandler) StreamGenerate(c echo.Context) error {
 			Plan:         suggestion.Plan,
 			Model:        h.client.ModelName(),
 			GenerationMS: latency.Milliseconds(),
+		})
+	}
+	if attempt != nil {
+		_ = h.experiment.AddAIUsage(genCtx, attempt.AttemptID, latency.Milliseconds(), 1)
+		_ = h.experiment.RecordEvent(genCtx, attempt.AttemptID, "soap_draft_stream_generated", map[string]interface{}{
+			"encounter_id": encounterID,
+			"latency_ms":   latency.Milliseconds(),
+			"is_mock":      isMock,
+			"force":        req.Force,
 		})
 	}
 

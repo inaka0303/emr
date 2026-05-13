@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/example/ehr-demo/internal/repository"
 	"github.com/labstack/echo/v4"
 )
 
@@ -18,6 +19,7 @@ import (
 type RAGHandler struct {
 	baseURL    string
 	httpClient *http.Client
+	experiment *repository.ExperimentRepository
 }
 
 func NewRAGHandler() *RAGHandler {
@@ -29,6 +31,10 @@ func NewRAGHandler() *RAGHandler {
 		baseURL:    url,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
+}
+
+func (h *RAGHandler) SetExperimentRepository(repo *repository.ExperimentRepository) {
+	h.experiment = repo
 }
 
 type ragSearchRequest struct {
@@ -63,6 +69,10 @@ func (h *RAGHandler) Search(c echo.Context) error {
 	if req.N <= 0 {
 		req.N = 5
 	}
+	attempt, err := ensureExperimentAIAllowed(c, h.experiment, 0)
+	if err != nil {
+		return experimentGuardResponse(c, err)
+	}
 
 	body, _ := json.Marshal(req)
 	httpReq, err := http.NewRequestWithContext(c.Request().Context(), http.MethodPost,
@@ -89,6 +99,14 @@ func (h *RAGHandler) Search(c echo.Context) error {
 	var out ragSearchResponse
 	if err := json.Unmarshal(respBody, &out); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "RAGレスポンスの解析失敗"})
+	}
+	if attempt != nil {
+		_ = h.experiment.RecordEvent(c.Request().Context(), attempt.AttemptID, "rag_search", map[string]interface{}{
+			"query_len":  len([]rune(req.Query)),
+			"n":          req.N,
+			"result_len": len(out.Results),
+			"elapsed_ms": out.ElapsedMs,
+		})
 	}
 
 	return c.JSON(http.StatusOK, map[string]interface{}{"data": out})

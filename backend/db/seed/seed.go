@@ -2,19 +2,159 @@ package seed
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
 )
 
-// Run はダミーデータをDBに投入する
+type attemptSeed struct {
+	AttemptID    string
+	SubjectID    string
+	CaseID       string
+	SourceCaseID string
+	Intervention string
+	Order        int
+}
+
+var experimentAttempts = []attemptSeed{
+	{"A01", "S1", "C1", "JC-AMI-A", "ai", 1},
+	{"A02", "S1", "C2", "JC-PE-B", "control", 2},
+	{"A03", "S1", "C3", "JC-AD-A", "ai", 3},
+	{"A04", "S1", "C4", "JC-AHF-B", "control", 4},
+	{"A05", "S2", "C2", "JC-PE-B", "ai", 1},
+	{"A06", "S2", "C3", "JC-AD-A", "control", 2},
+	{"A07", "S2", "C4", "JC-AHF-B", "ai", 3},
+	{"A08", "S2", "C1", "JC-AMI-A", "control", 4},
+	{"A09", "S3", "C3", "JC-AD-A", "control", 1},
+	{"A10", "S3", "C4", "JC-AHF-B", "ai", 2},
+	{"A11", "S3", "C1", "JC-AMI-A", "control", 3},
+	{"A12", "S3", "C2", "JC-PE-B", "ai", 4},
+	{"A13", "S4", "C4", "JC-AHF-B", "control", 1},
+	{"A14", "S4", "C1", "JC-AMI-A", "ai", 2},
+	{"A15", "S4", "C2", "JC-PE-B", "control", 3},
+	{"A16", "S4", "C3", "JC-AD-A", "ai", 4},
+	{"A17", "S5", "C5", "JC-AMI-B", "ai", 1},
+	{"A18", "S5", "C6", "JC-PE-A", "control", 2},
+	{"A19", "S5", "C7", "JC-AD-B", "ai", 3},
+	{"A20", "S5", "C8", "JC-AHF-A", "control", 4},
+	{"A21", "S6", "C6", "JC-PE-A", "ai", 1},
+	{"A22", "S6", "C7", "JC-AD-B", "control", 2},
+	{"A23", "S6", "C8", "JC-AHF-A", "ai", 3},
+	{"A24", "S6", "C5", "JC-AMI-B", "control", 4},
+	{"A25", "S7", "C7", "JC-AD-B", "control", 1},
+	{"A26", "S7", "C8", "JC-AHF-A", "ai", 2},
+	{"A27", "S7", "C5", "JC-AMI-B", "control", 3},
+	{"A28", "S7", "C6", "JC-PE-A", "ai", 4},
+	{"A29", "S8", "C8", "JC-AHF-A", "control", 1},
+	{"A30", "S8", "C5", "JC-AMI-B", "ai", 2},
+	{"A31", "S8", "C6", "JC-PE-A", "control", 3},
+	{"A32", "S8", "C7", "JC-AD-B", "ai", 4},
+}
+
+type outpatientCase struct {
+	EncounterID     string                  `json:"encounter_id"`
+	Scenario        string                  `json:"scenario"`
+	DiseaseLabelJP  string                  `json:"disease_label_jp"`
+	Patient         outpatientCasePatient   `json:"patient"`
+	Encounter       outpatientCaseEncounter `json:"encounter"`
+	ReceptionVitals map[string]interface{}  `json:"reception_vitals"`
+	InputPatternA   json.RawMessage         `json:"input_pattern_A"`
+	InputPatternB   *string                 `json:"input_pattern_B"`
+}
+
+type outpatientCasePatient struct {
+	Age                int      `json:"age"`
+	Gender             string   `json:"gender"`
+	BloodType          *string  `json:"blood_type"`
+	Comorbidities      []string `json:"comorbidities"`
+	CurrentMedications []string `json:"current_medications"`
+	Allergies          []string `json:"allergies"`
+	FamilyHistory      []string `json:"family_history"`
+	SocialHistory      string   `json:"social_history"`
+}
+
+type outpatientCaseEncounter struct {
+	Type                string   `json:"type"`
+	Department          string   `json:"department"`
+	EncounterDate       string   `json:"encounter_date"`
+	ChiefComplaint      string   `json:"chief_complaint"`
+	SecondaryComplaints []string `json:"secondary_complaints"`
+}
+
+type seedPatient struct {
+	MRN, Name, NameKana, BirthDate, Gender, BloodType, Phone, Address, ECName, ECPhone string
+}
+
+// Run は実験用データをDBに投入する。
+// 既存の一般デモ患者は削除し、MRN-0021 (新規太郎) と A01-A32 の独立attemptだけを作る。
 func Run(db *sql.DB) error {
+	cases, err := loadExperimentCases()
+	if err != nil {
+		return err
+	}
+
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
-	// 既存データクリア（子→親の順）+ AUTOINCREMENT カウンタのリセット
-	tables := []string{
+	if err := clearAll(tx); err != nil {
+		return err
+	}
+
+	if _, err := insertPatient(tx, seedPatient{
+		MRN:       "MRN-0021",
+		Name:      "新規 太郎",
+		NameKana:  "シンキ タロウ",
+		BirthDate: "1979-09-09",
+		Gender:    "男性",
+		BloodType: "O",
+		Phone:     "03-9999-0001",
+		Address:   "東京都新宿区（仮）21-21-21",
+		ECName:    "新規 花子",
+		ECPhone:   "03-9999-0002",
+	}); err != nil {
+		return err
+	}
+
+	newPatientID, err := patientIDByMRN(tx, "MRN-0021")
+	if err != nil {
+		return err
+	}
+	if _, err := insertEncounter(tx, newPatientID, outpatientCaseEncounter{
+		Type:           "外来",
+		Department:     "内科",
+		EncounterDate:  "2026-04-20",
+		ChiefComplaint: "（初診・主訴は問診入力中）",
+	}); err != nil {
+		return err
+	}
+
+	for _, def := range experimentAttempts {
+		c, ok := cases[def.SourceCaseID]
+		if !ok {
+			return fmt.Errorf("case %s not loaded", def.SourceCaseID)
+		}
+		if err := insertExperimentAttempt(tx, def, c); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+func clearAll(tx *sql.Tx) error {
+	stmts := []string{
+		"DELETE FROM experiment_events",
+		"DELETE FROM experiment_attempts",
+		"DELETE FROM admission_summaries",
+		"DELETE FROM soap_drafts",
 		"DELETE FROM interview_notes",
 		"DELETE FROM soap_notes",
 		"DELETE FROM social_history",
@@ -22,620 +162,308 @@ func Run(db *sql.DB) error {
 		"DELETE FROM medical_history",
 		"DELETE FROM encounters",
 		"DELETE FROM patients",
-		"DELETE FROM sqlite_sequence WHERE name IN ('patients','encounters','interview_notes','soap_notes','medical_history','family_history','social_history')",
+		"DELETE FROM sqlite_sequence WHERE name IN ('patients','encounters','interview_notes','soap_notes','medical_history','family_history','social_history','experiment_events')",
 	}
-	for _, stmt := range tables {
+	for _, stmt := range stmts {
 		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("clear seed data: %w", err)
+		}
+	}
+	return nil
+}
+
+func loadExperimentCases() (map[string]outpatientCase, error) {
+	dir, err := findCaseDir()
+	if err != nil {
+		return nil, err
+	}
+	needed := map[string]bool{}
+	for _, a := range experimentAttempts {
+		needed[a.SourceCaseID] = true
+	}
+
+	out := make(map[string]outpatientCase, len(needed))
+	for id := range needed {
+		b, err := os.ReadFile(filepath.Join(dir, id+".json"))
+		if err != nil {
+			return nil, fmt.Errorf("read outpatient case %s: %w", id, err)
+		}
+		var c outpatientCase
+		if err := json.Unmarshal(b, &c); err != nil {
+			return nil, fmt.Errorf("parse outpatient case %s: %w", id, err)
+		}
+		out[id] = c
+	}
+	return out, nil
+}
+
+func findCaseDir() (string, error) {
+	if env := strings.TrimSpace(os.Getenv("ACI_CASE_DIR")); env != "" {
+		if isDir(env) {
+			return env, nil
+		}
+		return "", fmt.Errorf("ACI_CASE_DIR does not exist: %s", env)
+	}
+	cwd, _ := os.Getwd()
+	candidates := []string{
+		filepath.Join(cwd, "../../data/aci_jp_cardio/outpatient/cases"),
+		filepath.Join(cwd, "../data/aci_jp_cardio/outpatient/cases"),
+		filepath.Join(cwd, "data/aci_jp_cardio/outpatient/cases"),
+		"/home/junkanki/naka/data/aci_jp_cardio/outpatient/cases",
+	}
+	for _, c := range candidates {
+		if isDir(c) {
+			abs, _ := filepath.Abs(c)
+			return abs, nil
+		}
+	}
+	return "", fmt.Errorf("ACI-JP-Cardio outpatient cases directory not found; set ACI_CASE_DIR")
+}
+
+func isDir(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.IsDir()
+}
+
+func insertExperimentAttempt(tx *sql.Tx, def attemptSeed, c outpatientCase) error {
+	bloodType := ""
+	if c.Patient.BloodType != nil {
+		bloodType = *c.Patient.BloodType
+	}
+	patientID, err := insertPatient(tx, seedPatient{
+		MRN:       "EXP-" + def.AttemptID,
+		Name:      fmt.Sprintf("症例%s %s", def.CaseID, def.AttemptID),
+		NameKana:  fmt.Sprintf("ショウレイ%s %s", def.CaseID, def.AttemptID),
+		BirthDate: birthDateForAge(c.Patient.Age, c.Encounter.EncounterDate),
+		Gender:    c.Patient.Gender,
+		BloodType: bloodType,
+		Phone:     "",
+		Address:   "実験症例",
+		ECName:    "",
+		ECPhone:   "",
+	})
+	if err != nil {
+		return fmt.Errorf("insert experiment patient %s: %w", def.AttemptID, err)
+	}
+
+	encounterID, err := insertEncounter(tx, patientID, c.Encounter)
+	if err != nil {
+		return fmt.Errorf("insert experiment encounter %s: %w", def.AttemptID, err)
+	}
+
+	rawText, medList, exam, labs, err := buildInterviewSections(c)
+	if err != nil {
+		return fmt.Errorf("build interview %s: %w", def.SourceCaseID, err)
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO interview_notes (encounter_id, raw_text, medication_list, exam_findings, lab_results) VALUES (?,?,?,?,?)`,
+		encounterID, rawText, medList, exam, labs,
+	); err != nil {
+		return fmt.Errorf("insert experiment interview %s: %w", def.AttemptID, err)
+	}
+
+	if err := insertPatientContext(tx, patientID, c.Patient); err != nil {
+		return fmt.Errorf("insert patient context %s: %w", def.AttemptID, err)
+	}
+
+	if _, err := tx.Exec(
+		`INSERT INTO experiment_attempts
+		 (attempt_id, subject_id, case_id, source_case_id, intervention, sequence_order, patient_id, encounter_id)
+		 VALUES (?,?,?,?,?,?,?,?)`,
+		def.AttemptID, def.SubjectID, def.CaseID, def.SourceCaseID, def.Intervention, def.Order, patientID, encounterID,
+	); err != nil {
+		return fmt.Errorf("insert experiment attempt %s: %w", def.AttemptID, err)
+	}
+	return nil
+}
+
+func insertPatient(tx *sql.Tx, p seedPatient) (int64, error) {
+	result, err := tx.Exec(
+		`INSERT INTO patients (mrn, name, name_kana, birth_date, gender, blood_type, phone, address, emergency_contact_name, emergency_contact_phone)
+		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		p.MRN, p.Name, p.NameKana, p.BirthDate, p.Gender, p.BloodType, p.Phone, p.Address, p.ECName, p.ECPhone,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("insert patient %s: %w", p.MRN, err)
+	}
+	return result.LastInsertId()
+}
+
+func patientIDByMRN(tx *sql.Tx, mrn string) (int64, error) {
+	var id int64
+	if err := tx.QueryRow(`SELECT id FROM patients WHERE mrn = ?`, mrn).Scan(&id); err != nil {
+		return 0, fmt.Errorf("lookup patient %s: %w", mrn, err)
+	}
+	return id, nil
+}
+
+func insertEncounter(tx *sql.Tx, patientID int64, e outpatientCaseEncounter) (int64, error) {
+	encounterType := normalizeEncounterType(e.Type)
+	result, err := tx.Exec(
+		`INSERT INTO encounters (patient_id, encounter_date, encounter_type, department, attending_doctor, status, chief_complaint)
+		 VALUES (?,?,?,?,?,?,?)`,
+		patientID, e.EncounterDate, encounterType, e.Department, "実験担当", "進行中", e.ChiefComplaint,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("insert encounter: %w", err)
+	}
+	return result.LastInsertId()
+}
+
+func normalizeEncounterType(v string) string {
+	if strings.Contains(v, "救急") {
+		return "救急"
+	}
+	if strings.Contains(v, "入院") {
+		return "入院"
+	}
+	return "外来"
+}
+
+func buildInterviewSections(c outpatientCase) (rawText, medList, exam, labs string, err error) {
+	if c.InputPatternB != nil && strings.TrimSpace(*c.InputPatternB) != "" {
+		return strings.TrimSpace(*c.InputPatternB), "", "", formatReceptionVitals(c.ReceptionVitals), nil
+	}
+	if len(c.InputPatternA) == 0 || string(c.InputPatternA) == "null" {
+		return "", "", "", "", fmt.Errorf("no usable input pattern")
+	}
+	var patternA struct {
+		PhysicianSummary struct {
+			RawText        string `json:"raw_text"`
+			MedicationList string `json:"medication_list"`
+			ExamFindings   string `json:"exam_findings"`
+			LabResults     string `json:"lab_results"`
+		} `json:"physician_summary"`
+	}
+	if err := json.Unmarshal(c.InputPatternA, &patternA); err != nil {
+		return "", "", "", "", err
+	}
+	rawText = strings.TrimSpace(patternA.PhysicianSummary.RawText)
+	if rawText == "" {
+		return "", "", "", "", fmt.Errorf("pattern A raw_text is empty")
+	}
+	return rawText,
+		trimSectionHeader(patternA.PhysicianSummary.MedicationList, "【お薬手帳より】"),
+		strings.TrimSpace(patternA.PhysicianSummary.ExamFindings),
+		strings.TrimSpace(patternA.PhysicianSummary.LabResults),
+		nil
+}
+
+func trimSectionHeader(v, header string) string {
+	v = strings.TrimSpace(v)
+	v = strings.TrimPrefix(v, header)
+	return strings.TrimSpace(v)
+}
+
+func formatReceptionVitals(v map[string]interface{}) string {
+	if len(v) == 0 {
+		return ""
+	}
+	var parts []string
+	if sys, ok := v["BP_sys"]; ok {
+		if dia, ok := v["BP_dia"]; ok {
+			parts = append(parts, fmt.Sprintf("BP %s/%s mmHg", valueString(sys), valueString(dia)))
+		}
+	}
+	keys := []struct {
+		Key   string
+		Label string
+		Unit  string
+	}{
+		{"HR", "HR", "/min"},
+		{"RR", "RR", "/min"},
+		{"BT", "BT", "℃"},
+		{"SpO2", "SpO2", "%"},
+	}
+	for _, k := range keys {
+		if val, ok := v[k.Key]; ok {
+			parts = append(parts, fmt.Sprintf("%s %s%s", k.Label, valueString(val), k.Unit))
+		}
+	}
+	sort.Strings(parts)
+	return "受付バイタル: " + strings.Join(parts, ", ")
+}
+
+func valueString(v interface{}) string {
+	switch t := v.(type) {
+	case float64:
+		if t == float64(int64(t)) {
+			return strconv.FormatInt(int64(t), 10)
+		}
+		return strconv.FormatFloat(t, 'f', 1, 64)
+	case int:
+		return strconv.Itoa(t)
+	case string:
+		return t
+	default:
+		return fmt.Sprint(t)
+	}
+}
+
+func insertPatientContext(tx *sql.Tx, patientID int64, p outpatientCasePatient) error {
+	for _, condition := range p.Comorbidities {
+		if strings.TrimSpace(condition) == "" {
+			continue
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO medical_history (patient_id, condition, onset_date, status, notes) VALUES (?,?,?,?,?)`,
+			patientID, condition, "", "症例情報", "ACI-JP-Cardio outpatient case JSON",
+		); err != nil {
 			return err
 		}
 	}
-
-	// 患者データ (20名)
-	// ID:1 山田太郎 - デモの主人公患者（58歳男性、高血圧・糖尿病の既往あり）
-	// ID:2 佐藤美咲 - デモの第2患者（45歳女性、糖尿病フォロー中）
-	patients := []struct {
-		mrn, name, nameKana, birthDate, gender, bloodType, phone, address, ecName, ecPhone string
-	}{
-		{"MRN-0001", "山田 太郎", "ヤマダ タロウ", "1968-02-14", "男性", "A", "03-1234-5678", "東京都新宿区西新宿1-1-1", "山田 花子", "03-1234-5679"},
-		{"MRN-0002", "佐藤 美咲", "サトウ ミサキ", "1981-05-10", "女性", "O", "03-2345-6789", "東京都渋谷区神宮前2-2-2", "佐藤 健一", "03-2345-6780"},
-		{"MRN-0003", "佐藤 健一", "サトウ ケンイチ", "1955-11-03", "男性", "B", "045-123-4567", "神奈川県横浜市中区本町3-3-3", "佐藤 美智子", "045-123-4568"},
-		{"MRN-0004", "高橋 美咲", "タカハシ ミサキ", "1990-01-10", "女性", "AB", "06-1234-5678", "大阪府大阪市北区梅田4-4-4", "高橋 誠", "06-1234-5679"},
-		{"MRN-0005", "伊藤 誠", "イトウ マコト", "1972-05-28", "男性", "A", "052-123-4567", "愛知県名古屋市中区栄5-5-5", "伊藤 恵", "052-123-4568"},
-		{"MRN-0006", "渡辺 優子", "ワタナベ ユウコ", "1983-09-14", "女性", "O", "03-3456-7890", "東京都品川区大崎6-6-6", "渡辺 剛", "03-3456-7891"},
-		{"MRN-0007", "山本 隆", "ヤマモト タカシ", "1948-12-25", "男性", "A", "078-123-4567", "兵庫県神戸市中央区三宮7-7-7", "山本 節子", "078-123-4568"},
-		{"MRN-0008", "中村 さくら", "ナカムラ サクラ", "1995-04-01", "女性", "B", "011-123-4567", "北海道札幌市中央区大通8-8-8", "中村 大輔", "011-123-4568"},
-		{"MRN-0009", "小林 正義", "コバヤシ マサヨシ", "1960-08-08", "男性", "O", "092-123-4567", "福岡県福岡市博多区博多駅前9-9-9", "小林 幸恵", "092-123-4568"},
-		{"MRN-0010", "加藤 真理", "カトウ マリ", "1988-02-14", "女性", "A", "03-4567-8901", "東京都世田谷区三軒茶屋10-10-10", "加藤 健太", "03-4567-8902"},
-		{"MRN-0011", "吉田 浩二", "ヨシダ コウジ", "1970-06-30", "男性", "AB", "03-5678-9012", "東京都中野区中野11-11-11", "吉田 美穂", "03-5678-9013"},
-		{"MRN-0012", "山田 あゆみ", "ヤマダ アユミ", "1992-10-20", "女性", "B", "044-123-4567", "神奈川県川崎市川崎区12-12-12", "山田 太一", "044-123-4568"},
-		{"MRN-0013", "松本 勇気", "マツモト ユウキ", "1958-04-18", "男性", "A", "048-123-4567", "埼玉県さいたま市浦和区13-13-13", "松本 和子", "048-123-4568"},
-		{"MRN-0014", "井上 恵理", "イノウエ エリ", "1985-12-05", "女性", "O", "03-6789-0123", "東京都豊島区池袋14-14-14", "井上 拓也", "03-6789-0124"},
-		{"MRN-0015", "木村 大地", "キムラ ダイチ", "1975-03-22", "男性", "B", "03-7890-1234", "東京都墨田区押上15-15-15", "木村 真由美", "03-7890-1235"},
-		{"MRN-0016", "林 千尋", "ハヤシ チヒロ", "1998-08-15", "女性", "A", "075-123-4567", "京都府京都市左京区16-16-16", "林 正", "075-123-4568"},
-		{"MRN-0017", "清水 龍太", "シミズ リュウタ", "1952-01-07", "男性", "O", "082-123-4567", "広島県広島市中区17-17-17", "清水 智子", "082-123-4568"},
-		{"MRN-0018", "森 由美", "モリ ユミ", "1980-11-11", "女性", "AB", "022-123-4567", "宮城県仙台市青葉区18-18-18", "森 健二", "022-123-4568"},
-		{"MRN-0019", "阿部 翔太", "アベ ショウタ", "1968-07-04", "男性", "A", "096-123-4567", "熊本県熊本市中央区19-19-19", "阿部 裕子", "096-123-4568"},
-		{"MRN-0020", "池田 里奈", "イケダ リナ", "1993-05-25", "女性", "B", "099-123-4567", "鹿児島県鹿児島市中央町20-20-20", "池田 修", "099-123-4568"},
-		// 問診入力テスト用: 医師がアプリで問診を打ち込みながら挙動を確認する
-		{"MRN-0021", "新規 太郎", "シンキ タロウ", "1979-09-09", "男性", "O", "03-9999-0001", "東京都新宿区（仮）21-21-21", "新規 花子", "03-9999-0002"},
-		// 音声入力テスト用: 問診記録に音声認識(STT)生出力風のテキストを入れる
-		{"MRN-0022", "音声 花子", "オンセイ ハナコ", "1963-09-12", "女性", "A", "03-9999-0022", "東京都渋谷区（仮）22-22-22", "音声 美咲", "03-9999-0023"},
-	}
-
-	for _, p := range patients {
-		_, err := tx.Exec(
-			`INSERT INTO patients (mrn, name, name_kana, birth_date, gender, blood_type, phone, address, emergency_contact_name, emergency_contact_phone) VALUES (?,?,?,?,?,?,?,?,?,?)`,
-			p.mrn, p.name, p.nameKana, p.birthDate, p.gender, p.bloodType, p.phone, p.address, p.ecName, p.ecPhone,
-		)
-		if err != nil {
-			return fmt.Errorf("insert patient %s: %w", p.mrn, err)
-		}
-	}
-
-	// 受診記録
-	encounters := []struct {
-		patientID                                                       int
-		date, encounterType, department, doctor, status, chiefComplaint string
-	}{
-		// 山田太郎（ID:1）- 定期フォロー3件 + 頭痛での受診1件
-		{1, "2025-10-15", "外来", "内科", "田村 健", "完了", "高血圧・糖尿病 定期フォロー"},
-		{1, "2026-01-20", "外来", "内科", "田村 健", "完了", "高血圧・糖尿病 定期フォロー（HbA1c 7.0%）"},
-		{1, "2026-03-10", "外来", "内科", "田村 健", "完了", "高血圧・糖尿病 定期フォロー（HbA1c 7.2%）"},
-		{1, "2026-04-03", "外来", "内科", "田村 健", "進行中", "3日前からの頭痛で来院"},
-		// 佐藤美咲（ID:2）- 糖尿病フォロー
-		{2, "2025-12-10", "外来", "内科", "山田 一郎", "完了", "糖尿病 定期フォロー（HbA1c 6.8%）"},
-		{2, "2026-03-15", "外来", "内科", "山田 一郎", "完了", "糖尿病 定期フォロー（HbA1c 7.0%、体重+1.5kg）"},
-		{2, "2026-04-02", "外来", "内科", "山田 一郎", "進行中", "糖尿病 定期フォロー（HbA1c 7.2%、体重増加傾向）"},
-		{3, "2026-02-10", "外来", "循環器科", "田村 健", "完了", "胸の圧迫感"},
-		{3, "2026-03-10", "外来", "循環器科", "田村 健", "完了", "定期検査"},
-		{3, "2026-04-01", "外来", "循環器科", "田村 健", "進行中", "血圧管理"},
-		{4, "2026-03-25", "外来", "皮膚科", "中島 美和", "完了", "湿疹"},
-		{4, "2026-04-03", "外来", "皮膚科", "中島 美和", "進行中", "湿疹の経過観察"},
-		{5, "2026-03-18", "外来", "整形外科", "木下 剛", "完了", "腰痛"},
-		{5, "2026-04-02", "外来", "整形外科", "木下 剛", "進行中", "腰痛の再発"},
-		{6, "2026-03-22", "外来", "眼科", "前田 光", "完了", "目の疲れ・視力低下"},
-		{6, "2026-04-01", "外来", "眼科", "前田 光", "進行中", "コンタクトレンズ処方"},
-		{7, "2026-01-15", "入院", "内科", "山田 一郎", "完了", "肺炎"},
-		{7, "2026-03-30", "外来", "内科", "山田 一郎", "進行中", "退院後フォロー"},
-		{8, "2026-04-01", "外来", "耳鼻咽喉科", "石田 修", "進行中", "花粉症の症状悪化"},
-		{9, "2026-03-05", "救急", "救急科", "緊急対応医", "完了", "交通事故による打撲"},
-		{9, "2026-03-20", "外来", "整形外科", "木下 剛", "完了", "打撲の経過観察"},
-		{10, "2026-03-28", "外来", "心療内科", "大西 陽子", "進行中", "不眠・ストレス"},
-		{11, "2026-04-02", "外来", "消化器科", "後藤 真一", "進行中", "胃もたれ・食欲不振"},
-		{12, "2026-03-30", "外来", "婦人科", "佐々木 恵", "完了", "生理不順"},
-		{13, "2026-03-15", "外来", "泌尿器科", "小川 隆", "完了", "頻尿"},
-		{13, "2026-04-01", "外来", "泌尿器科", "小川 隆", "進行中", "前立腺検査"},
-		{14, "2026-04-03", "外来", "内科", "山田 一郎", "進行中", "発熱・咳"},
-		{15, "2026-03-20", "外来", "循環器科", "田村 健", "完了", "動悸"},
-		{15, "2026-04-01", "外来", "循環器科", "田村 健", "進行中", "ホルター心電図結果説明"},
-		// 患者16〜20 - suggestアプリ動作確認用の進行中受診
-		{16, "2026-04-03", "外来", "内科", "山田 一郎", "進行中", "動悸・易疲労感"},
-		{17, "2026-04-02", "外来", "整形外科", "木下 剛", "進行中", "両膝の慢性痛"},
-		{18, "2026-04-03", "外来", "婦人科", "佐々木 恵", "進行中", "更年期様症状（ほてり・不眠）"},
-		{19, "2026-03-30", "外来", "内科", "田村 健", "進行中", "高血圧・糖尿病 定期フォロー"},
-		{20, "2026-04-01", "外来", "内科", "山田 一郎", "進行中", "健診で脂質異常・HbA1c高値指摘、初診"},
-		// 入院時サマリLoRA動作確認用: 入院・進行中の受診
-		{7, "2026-04-18", "入院", "内科", "田村 健", "進行中", "慢性心不全急性増悪で緊急入院"},
-		// 問診入力テスト用: 患者21、問診記録なしで進行中受診だけを持つ
-		{21, "2026-04-20", "外来", "内科", "山田 一郎", "進行中", "（初診・主訴は問診入力中）"},
-		// 音声入力テスト用: 患者22（音声花子）、問診記録が STT 生出力風
-		{22, "2026-04-23", "外来", "循環器内科", "田村 健", "進行中", "動悸"},
-	}
-
-	for _, e := range encounters {
-		_, err := tx.Exec(
-			`INSERT INTO encounters (patient_id, encounter_date, encounter_type, department, attending_doctor, status, chief_complaint) VALUES (?,?,?,?,?,?,?)`,
-			e.patientID, e.date, e.encounterType, e.department, e.doctor, e.status, e.chiefComplaint,
-		)
-		if err != nil {
-			return fmt.Errorf("insert encounter for patient %d: %w", e.patientID, err)
-		}
-	}
-
-	// SOAP記録（一部の受診に対して）
-	soapNotes := []struct {
-		encounterID                                    int
-		author, subjective, objective, assessment, plan string
-		isSLMSuggested                                 bool
-	}{
-		// 山田太郎 - 定期フォロー1回目
-		{1, "田村 健",
-			"高血圧・糖尿病の定期フォロー。自覚症状なし。服薬コンプライアンス良好。食事は外食が多い。",
-			"BP 138/88mmHg, HR 72bpm, BT 36.4℃。体重 78kg。HbA1c 6.8%。空腹時血糖 132mg/dL。",
-			"高血圧症・2型糖尿病、現行治療で概ね安定。",
-			"現行処方継続。食事指導（塩分・糖質制限）。3ヶ月後再診。",
-			false},
-		// 山田太郎 - 定期フォロー2回目
-		{2, "田村 健",
-			"特に自覚症状なし。年末年始に食事量が増えた。運動はほとんどしていない。",
-			"BP 142/90mmHg, HR 74bpm。体重 80kg（+2kg）。HbA1c 7.0%（前回6.8%）。LDL 148mg/dL。",
-			"高血圧症・2型糖尿病、やや悪化傾向。体重増加と運動不足が原因と考えられる。",
-			"降圧剤増量検討。食事・運動指導強化。管理栄養士による栄養指導を予約。3ヶ月後再診。",
-			false},
-		// 山田太郎 - 定期フォロー3回目
-		{3, "田村 健",
-			"血圧は自宅測定で140台。運動はウォーキングを週1回程度始めた。間食が減らない。",
-			"BP 140/88mmHg, HR 76bpm。体重 79kg（-1kg）。HbA1c 7.2%。空腹時血糖 148mg/dL。腎機能：eGFR 72。",
-			"高血圧症・2型糖尿病、血糖コントロール不十分。腎機能は軽度低下あるが安定。",
-			"メトホルミン増量（500mg→750mg）。降圧目標未達のためアムロジピン5mg→10mgに増量。1ヶ月後再診。",
-			false},
-		// 佐藤美咲 - 糖尿病フォロー1回目
-		{5, "山田 一郎",
-			"糖尿病の定期フォロー。特に自覚症状なし。食事管理は概ね良好。週末にビール1本飲む程度。",
-			"BP 118/72mmHg, HR 68bpm。体重 58kg。HbA1c 6.8%。空腹時血糖 126mg/dL。",
-			"2型糖尿病、現行治療で安定。",
-			"現行処方継続（メトホルミン500mg 2T2×）。3ヶ月後再診。",
-			false},
-		// 佐藤美咲 - 糖尿病フォロー2回目
-		{6, "山田 一郎",
-			"最近仕事が忙しく、外食が増えた。体重が少し増えた気がする。ウォーキングは週2回継続中。",
-			"BP 122/76mmHg, HR 70bpm。体重 59.5kg（+1.5kg）。HbA1c 7.0%。空腹時血糖 138mg/dL。",
-			"2型糖尿病、やや悪化傾向。体重増加と食生活の乱れが要因。",
-			"食事指導再強化。外食時のメニュー選択について指導。現行処方継続。3ヶ月後再診。",
-			false},
-		// 既存患者のSOAP（IDを調整）
-		{8, "田村 健",
-			"2週間前から時々胸が締め付けられるような感覚がある。特に階段を上るときに感じる。安静にすると5分程度で改善。",
-			"血圧 145/90mmHg、脈拍 78/分。心音整、雑音なし。心電図：洞調律、ST変化なし。",
-			"労作性狭心症の疑い。高血圧症の管理も必要。",
-			"ニトログリセリン舌下錠 頓用処方。冠動脈CT予約（来週）。アムロジピン5mg 1日1回 開始。",
-			false},
-		{17, "山田 一郎",
-			"4日前に入院。入院時から38.8℃の発熱、咳嗽、喀痰あり。抗菌薬投与開始後、3日目から解熱傾向。",
-			"体温 37.2℃、SpO2 96%（室内気）。胸部X線：右下肺野の浸潤影は縮小傾向。CRP 2.5（入院時 12.8）。",
-			"市中肺炎（改善傾向）。",
-			"抗菌薬を経口切り替え（アモキシシリン）。明日退院予定。1週間後に外来フォロー。",
-			false},
-	}
-
-	for _, s := range soapNotes {
-		_, err := tx.Exec(
-			`INSERT INTO soap_notes (encounter_id, author, subjective, objective, assessment, plan, is_slm_suggested) VALUES (?,?,?,?,?,?,?)`,
-			s.encounterID, s.author, s.subjective, s.objective, s.assessment, s.plan, s.isSLMSuggested,
-		)
-		if err != nil {
-			return fmt.Errorf("insert soap note for encounter %d: %w", s.encounterID, err)
-		}
-	}
-
-	// 既往歴
-	medicalHistory := []struct {
-		patientID         int
-		condition         string
-		onsetDate, status string
-		notes             string
-	}{
-		// 山田太郎（ID:1）- 高血圧・糖尿病の既往あり
-		{1, "高血圧症", "2012-04-01", "治療中", "アムロジピン10mg服用中、自宅血圧測定指導済み"},
-		{1, "2型糖尿病", "2015-08-01", "治療中", "メトホルミン750mg 2T2×、HbA1c 7.2%（直近）"},
-		{1, "脂質異常症", "2018-03-01", "治療中", "アトルバスタチン10mg服用中、LDL 148mg/dL"},
-		// 佐藤美咲（ID:2）- 糖尿病フォロー中
-		{2, "2型糖尿病", "2020-06-01", "治療中", "メトホルミン500mg 2T2×、HbA1c 7.2%、体重増加傾向"},
-		{3, "2型糖尿病", "2010-04-01", "治療中", "メトホルミン500mg 1日2回"},
-		{3, "高血圧症", "2008-01-01", "治療中", "複数の降圧剤服用中"},
-		{5, "腰椎椎間板ヘルニア", "2020-09-01", "経過観察", "L4/5レベル、保存療法"},
-		{7, "COPD", "2015-01-01", "治療中", "吸入薬使用中"},
-		{7, "高血圧症", "2005-06-01", "治療中", "ARB服用中"},
-		{9, "痛風", "2019-11-01", "治療中", "フェブキソスタット服用中"},
-		{10, "うつ病", "2024-06-01", "治療中", "SSRI服用中"},
-		{13, "前立腺肥大症", "2023-08-01", "治療中", "α遮断薬服用中"},
-		{15, "不整脈（心房細動）", "2022-05-01", "治療中", "抗凝固薬服用中"},
-	}
-
-	for _, m := range medicalHistory {
-		_, err := tx.Exec(
+	if len(p.Allergies) > 0 {
+		if _, err := tx.Exec(
 			`INSERT INTO medical_history (patient_id, condition, onset_date, status, notes) VALUES (?,?,?,?,?)`,
-			m.patientID, m.condition, m.onsetDate, m.status, m.notes,
-		)
-		if err != nil {
-			return fmt.Errorf("insert medical history: %w", err)
+			patientID, "アレルギー", "", "情報", strings.Join(p.Allergies, "、"),
+		); err != nil {
+			return err
 		}
 	}
-
-	// 家族歴
-	familyHistory := []struct {
-		patientID int
-		relation  string
-		condition string
-		notes     string
-	}{
-		// 山田太郎（ID:1）
-		{1, "父", "2型糖尿病", "60歳で発症、インスリン療法中、腎症合併"},
-		{1, "母", "高血圧症", "55歳で発症、降圧剤服用中"},
-		{1, "父方の祖父", "胃がん", "70歳で死亡"},
-		// 佐藤美咲（ID:2）
-		{2, "父", "2型糖尿病", "55歳で発症、経口薬でコントロール中"},
-		{3, "父", "心筋梗塞", "65歳で発症、70歳で死亡"},
-		{3, "兄", "2型糖尿病", "50歳で発症"},
-		{7, "父", "肺がん", "70歳で死亡"},
-		{10, "母", "うつ病", "40代で発症"},
-		{15, "父", "心房細動", "60歳で発症"},
-		{15, "母", "高血圧症", "50歳で発症"},
-	}
-
-	for _, f := range familyHistory {
-		_, err := tx.Exec(
+	for _, item := range p.FamilyHistory {
+		relation, condition, notes := parseFamilyHistory(item)
+		if _, err := tx.Exec(
 			`INSERT INTO family_history (patient_id, relation, condition, notes, is_slm_suggested) VALUES (?,?,?,?,FALSE)`,
-			f.patientID, f.relation, f.condition, f.notes,
-		)
-		if err != nil {
-			return fmt.Errorf("insert family history: %w", err)
+			patientID, relation, condition, notes,
+		); err != nil {
+			return err
 		}
 	}
-
-	// 社会歴
-	socialHistory := []struct {
-		patientID   int
-		category    string
-		description string
-		notes       string
-	}{
-		// 山田太郎（ID:1）- 喫煙20本/日×30年、飲酒あり、デスクワーク
-		{1, "喫煙", "20本/日×30年（ブリンクマン指数600）", "現在も喫煙中、禁煙指導済みだが継続困難"},
-		{1, "飲酒", "ビール350ml×2本/日、休肝日なし", "減酒指導済み"},
-		{1, "職業", "会社員（デスクワーク中心、管理職）", "残業月40時間程度、ストレス高い"},
-		{1, "運動", "ウォーキング週1回30分程度", "最近始めたばかり、継続を指導"},
-		{1, "睡眠", "平均5-6時間、中途覚醒あり", "ストレスによる不眠傾向"},
-		// 佐藤美咲（ID:2）
-		{2, "飲酒", "週末にビール350ml×1本程度", "機会飲酒"},
-		{2, "運動", "ウォーキング週2回30分", "継続中"},
-		{2, "職業", "事務職（デスクワーク）", "残業少ない"},
-		{3, "喫煙", "禁煙（10年前まで20本/日×20年）", ""},
-		{3, "飲酒", "日本酒2合/日", "減量指導済み"},
-		{5, "職業", "建設作業員", "重量物取扱いあり"},
-		{5, "運動", "なし", "腰痛のため制限中"},
-		{7, "喫煙", "禁煙（5年前まで30本/日×40年）", "COPD原因"},
-		{9, "運動", "ジョギング週3回", ""},
-		{10, "職業", "IT企業SE", "長時間のPC作業、残業常態化"},
-		{10, "運動", "なし", "以前はヨガをしていた"},
-	}
-
-	for _, s := range socialHistory {
-		_, err := tx.Exec(
+	if strings.TrimSpace(p.SocialHistory) != "" {
+		if _, err := tx.Exec(
 			`INSERT INTO social_history (patient_id, category, description, notes, is_slm_suggested) VALUES (?,?,?,?,FALSE)`,
-			s.patientID, s.category, s.description, s.notes,
-		)
-		if err != nil {
-			return fmt.Errorf("insert social history: %w", err)
+			patientID, "生活歴", p.SocialHistory, "",
+		); err != nil {
+			return err
 		}
 	}
+	return nil
+}
 
-	// 問診記録（4セクション構造: rawText=問診 / medList=お薬手帳 / exam=診察所見 / labs=検査結果）
-	// 既存データは raw_text に全部入っていた旧形式。主要デモ患者（1,2,7）は4分割、
-	// 残り17名は互換運用で raw_text のみ（問診欄に全表示）、他3フィールドは空。
-	interviewNotes := []struct {
-		encounterID int
-		rawText     string
-		medList     string
-		exam        string
-		labs        string
-	}{
-		// 患者1 山田太郎 58歳男性（enc4, 頭痛で受診）— 4セクション分割デモ
-		{
-			encounterID: 4,
-			rawText: `58歳男性、会社員（管理職、デスクワーク）。
-主訴: 3日前からのズキズキする両側頭痛。午後に悪化傾向。市販のイブプロフェンを頓服するも効果不十分。嘔気なし、光過敏あり、発熱なし。前駆症状・視野欠損なし。
-既往: 高血圧・2型糖尿病・脂質異常症で通院中。
-社会歴: 残業月60時間、睡眠5〜6時間で中途覚醒あり。喫煙20本/日×30年継続中、禁酒指導中にも関わらず毎晩ビール700ml。
-服薬: 朝の薬を忘れることあり（自己申告）。自宅血圧は140台が常態化。`,
-			medList: `・アムロジピン 10mg 1日1回朝
-・メトホルミン 750mg 1日2回朝夕
-・アトルバスタチン 10mg 1日1回夕`,
-			exam: `意識清明、神経学的所見に異常なし。
-頭痛部位: 両側側頭部、触診で圧痛軽度。
-頸部硬直なし、Kernig徴候なし。`,
-			labs: `バイタル: BP 152/96, HR 78, BT 36.6, SpO2 98%
-直近（3/10）採血: HbA1c 7.2%, LDL 148, eGFR 72, Cr 0.94, Na 140, K 4.3`,
-		},
-
-		// 患者2 佐藤美咲 45歳女性（enc7, 糖尿病フォロー）— 4セクション分割デモ
-		{
-			encounterID: 7,
-			rawText: `45歳女性、事務職。2型糖尿病で通院中。
-主訴: 糖尿病の定期受診。自覚症状なし。
-現病歴: この3ヶ月で仕事が忙しく外食・コンビニ昼食が増え、体重が1.5kg増加。ウォーキングは週2回30分を継続。飲酒は週末ビール350ml程度。口渇がやや気になるが多飲・多尿なし。足のしびれ・視力低下なし。
-既往: 2型糖尿病。
-家族歴: 父が2型糖尿病（経口薬）。
-服薬コンプライアンスは良好（本人申告）。`,
-			medList: `・メトホルミン 500mg 1日2回朝夕`,
-			exam: `意識清明、全身状態良好。
-下肢: 浮腫なし、振動覚・痛覚正常。足趾視診で異常なし（潰瘍・変形なし）。
-眼底: 糖尿病網膜症所見なし（前回2024/12）。`,
-			labs: `バイタル: BP 122/76, HR 70, BT 36.2, SpO2 99%
-本日採血: HbA1c 7.2%（前回7.0%）, 空腹時血糖 142, LDL 124, AST 22, ALT 28`,
-		},
-
-		// 患者3 佐藤健一 70歳男性（enc8, 胸圧迫感）
-		{
-			encounterID: 8,
-			rawText: `70歳男性 高血圧・2型糖尿病で通院中。元会社員、退職後5年。
-2週間前から労作時に胸が締めつけられる感覚が出現。階段昇降や早歩きで誘発され、安静で5分以内に軽快。冷汗・嘔気なし、放散痛なし。頻度は週2〜3回。夜間発作なし。既往は10年前の禁煙（20本/日×20年）、日本酒2合/日は継続。父が65歳で心筋梗塞で死亡、兄が糖尿病。`,
-			medList: `・ARB
-・メトホルミン
-・アムロジピン`,
-			exam: ``,
-			labs: `バイタル: BP 145/90, HR 76（整）, BT 36.5, SpO2 97%
-心電図: 洞調律、ST変化なし　採血(1週前): LDL 135, HbA1c 6.9, Cr 0.96`,
-		},
-
-		// 患者4 高橋美咲 36歳女性（enc12, 湿疹経過観察）
-		{
-			encounterID: 12,
-			rawText: `36歳女性 アトピー性皮膚炎既往。専業主婦、育児中。
-3週間前から両肘内側・両膝裏の湿疹で受診、前回ステロイド外用（ミディアムクラス）を処方され経過観察。掻痒は夜間に増悪し、睡眠を妨げる程度。前回より掻破痕は減ったが、完全寛解には至らず。保湿は1日2回継続中。新しい洗剤への変更はなし。食物アレルギーの指摘は過去になし。授乳中（生後8ヶ月）のためステロイド内服は希望せず。`,
-			medList: ``,
-			exam: `外観: 両肘窩・膝窩に苔癬化した紅斑（軽度）、滲出液なし`,
-			labs: `バイタル: BP 108/66, HR 72, BT 36.3, SpO2 99%`,
-		},
-
-		// 患者5 伊藤誠 53歳男性（enc14, 腰痛再発）
-		{
-			encounterID: 14,
-			rawText: `53歳男性 腰椎椎間板ヘルニア（L4/5）既往。建設作業員、重量物取扱いあり。
-1週間前から腰痛が再燃。前屈で増悪、右下肢外側にしびれ放散あり。SLRテスト陽性（右30度）、Patrick陰性。尿便失禁なし、鞍部麻痺なし。前回（2026-03-18）から保存療法（NSAIDs・湿布）で軽快していたが、重い資材を運んだ翌朝から悪化。ロキソプロフェン内服で多少軽減するが、胃もたれ感あり。運動習慣なし、体重増加傾向（BMI 28.5）。`,
-			medList: ``,
-			exam: ``,
-			labs: `バイタル: BP 132/82, HR 74, BT 36.4, SpO2 98%
-MRI（2020年）: L4/5椎間板ヘルニア、神経根圧迫軽度`,
-		},
-
-		// 患者6 渡辺優子 42歳女性（enc16, コンタクト処方）
-		{
-			encounterID: 16,
-			rawText: `42歳女性 屈折異常でコンタクトレンズ使用中。会社員。
-コンタクトレンズの処方更新で受診。前回（2週前）VDT症候群疑いで点眼薬（ヒアレイン）を処方され、目の疲れはやや軽減。1日のPC作業時間は8〜10時間。最近近くが見づらくなったと自覚、調節性眼精疲労の疑い。眼痛・飛蚊症・視野欠損なし。コンタクトは1日使い捨て、装用時間14時間/日。`,
-			medList: ``,
-			exam: `視力: 裸眼R 0.1/L 0.1、矯正R 1.2/L 1.2　眼圧: R 14/L 13 mmHg`,
-			labs: `バイタル: BP 118/72, HR 70`,
-		},
-
-		// 患者7 山本隆 77歳男性（enc18, 退院後フォロー）
-		{
-			encounterID: 18,
-			rawText: `77歳男性 市中肺炎で2026年1月に入院加療（抗菌薬点滴→経口）後、退院後フォロー。COPD既往、高血圧で通院中。元喫煙者（5年前まで30本/日×40年）。独居、妻が週3回訪問。
-入院時のエピソードは自覚症状のない発熱から進行。退院後は自宅で安静にしていたが、咳は残存し、湿性咳嗽が1日数回。息切れは平地歩行で以前より悪化（修正MRC 2→3）。食欲は戻ってきた。服薬アドヒアランスは比較的良好だが、吸入手技にばらつきあり。下腿浮腫なし。`,
-			medList: `・吸入薬：チオトロピウム+インダカテロール/グリコピロニウム`,
-			exam: ``,
-			labs: `バイタル: BP 138/80, HR 82（整）, BT 36.7, SpO2 94%（室内気）
-胸部Xp（退院時）: 右下肺野の浸潤影は縮小　CRP 0.8（退院時2.5）`,
-		},
-
-		// 患者8 中村さくら 30歳女性（enc19, 花粉症）
-		{
-			encounterID: 19,
-			rawText: `30歳女性 毎年春のアレルギー性鼻炎（スギ・ヒノキ感作）。販売員。
-2週間前から症状悪化。水様性鼻漏・発作性くしゃみ（1日10回以上）・両眼掻痒感あり。市販の第二世代抗ヒスタミン薬を自己判断で内服するも、夜間の鼻閉で中途覚醒あり、日中の眠気で業務に支障。喘息症状なし、発熱なし。食物・薬物アレルギーなし。`,
-			medList: ``,
-			exam: `所見: 両側鼻粘膜は蒼白〜腫脹、水様性分泌物あり　結膜は軽度充血`,
-			labs: `バイタル: BP 110/68, HR 68, BT 36.3, SpO2 99%`,
-		},
-
-		// 患者9 小林正義 65歳男性（enc21, 打撲経過観察）
-		{
-			encounterID: 21,
-			rawText: `65歳男性 痛風で通院中。
-3週間前の交通事故（歩行中に自転車と接触）で左下腿・腰部を打撲し、整形外科受診。XP上骨折なし、NSAIDs外用で経過観察中。打撲痕の色調は正常化。歩行時の違和感は残存するが徐々に改善。夜間痛・しびれなし。事故後のPTSD様症状（回避行動・悪夢）は自覚なし。尿酸値は過去1年5.8〜6.2で安定。ジョギング週3回は打撲後中断中、再開可否を希望。`,
-			medList: `・フェブキソスタット20mg`,
-			exam: `左下腿：打撲痕ほぼ消退、圧痛軽度残存　SLR陰性`,
-			labs: `バイタル: BP 128/78, HR 72, BT 36.4, SpO2 98%`,
-		},
-
-		// 患者10 加藤真理 38歳女性（enc22, 不眠・ストレス）
-		{
-			encounterID: 22,
-			rawText: `38歳女性 うつ病で通院中。IT企業SE、月残業80時間超。
-3週間前から入眠困難（入床→入眠まで90分以上）と中途覚醒が増悪。早朝覚醒はなし。日中の意欲低下・倦怠感あり、食欲低下で体重-2kg/3週間。希死念慮は否定、過去にもエピソードなし。業務では大規模プロジェクトの納期前で強いストレス。飲酒は頓用（週2回ワインを寝つきのため）。服薬アドヒアランス良好。`,
-			medList: `・SSRI：エスシタロプラム10mg`,
-			exam: ``,
-			labs: `バイタル: BP 104/64, HR 78, BT 36.2, SpO2 99%
-PHQ-9: 14点（中等度）, GAD-7: 11点`,
-		},
-
-		// 患者11 吉田浩二 55歳男性（enc23, 胃もたれ）
-		{
-			encounterID: 23,
-			rawText: `55歳男性 既往なし。自営業（飲食店経営）、不規則勤務。
-2週間前から食後の心窩部膨満感・胃もたれで受診。空腹時痛・夜間痛なし。食後30分〜1時間で出現し、自然軽快。食欲はやや低下、体重変化なし。嘔吐・吐血・タール便なし。喫煙なし、飲酒は日本酒2合/日を週5。市販の胃薬（H2ブロッカー）を2週間服用し、一時的改善。ピロリ菌感染歴は不明（未検査）。`,
-			medList: ``,
-			exam: `腹部所見: 心窩部軽度圧痛、反跳痛・筋性防御なし　便潜血: 陰性`,
-			labs: `バイタル: BP 134/82, HR 76, BT 36.5, SpO2 98%`,
-		},
-
-		// 患者12 山田あゆみ 33歳女性（enc24, 生理不順）
-		{
-			encounterID: 24,
-			rawText: `33歳女性 既往なし。事務職。
-半年前から月経周期が延長傾向（以前28日→現在45〜60日）で受診。月経量は不変、月経痛は軽度。妊娠希望なし、避妊はコンドーム。性交後出血なし。体重は+3kg/半年、肌荒れ（ニキビ）・多毛傾向を自覚。家族歴に多嚢胞性卵巣症候群の姉あり。ストレスは中等度（残業月30時間）、睡眠6時間。`,
-			medList: ``,
-			exam: `婦人科所見: 内診で子宮・卵巣に明らかな異常所見なし　経腟エコー: 右卵巣に小嚢胞多数（PCOS疑い）`,
-			labs: `バイタル: BP 118/72, HR 72, BT 36.4`,
-		},
-
-		// 患者13 松本勇気 68歳男性（enc26, 前立腺検査）
-		{
-			encounterID: 26,
-			rawText: `68歳男性 前立腺肥大症で通院中。退職、夫婦二人暮らし。
-1ヶ月前から夜間頻尿が増加（2回→4回）、排尿開始遅延・尿勢低下が自覚的に悪化。残尿感あり、切迫性尿失禁はなし。血尿なし、排尿時痛なし。タムスロシン服薬は継続中。前回PSA測定から1年経過し、再検査予定。生活習慣変化はなし。`,
-			medList: `・α遮断薬：タムスロシン0.2mg`,
-			exam: `直腸診: 前立腺腫大（胡桃大〜クルミ大、表面平滑、硬結なし）`,
-			labs: `バイタル: BP 142/86, HR 70, BT 36.3, SpO2 98%
-本日PSA結果待ち　尿検査: 潜血陰性、白血球陰性`,
-		},
-
-		// 患者14 井上恵理 40歳女性（enc27, 発熱・咳）
-		{
-			encounterID: 27,
-			rawText: `40歳女性 既往なし。小学校教諭、5歳児の母。
-2日前から38.5℃台の発熱と咳嗽・咽頭痛で受診。悪寒・筋肉痛あり、軽度の頭痛。関節痛なし。鼻汁は軽度水様性。食欲やや低下、嘔気・下痢なし。周囲のインフルエンザ流行なし、園児・家族内に感染症患者なし。新型コロナ迅速抗原検査は陰性（昨日自宅で実施）。飲水はとれている。`,
-			medList: ``,
-			exam: `咽頭: 発赤軽度、扁桃腫大なし、白苔なし　頸部リンパ節: 軽度腫大あり（圧痛軽度）`,
-			labs: `バイタル: BP 118/72, HR 96, BT 38.3, SpO2 97%
-インフルエンザ迅速検査（院内）: 結果待ち`,
-		},
-
-		// 患者15 木村大地 51歳男性（enc29, ホルター結果説明）
-		{
-			encounterID: 29,
-			rawText: `51歳男性 心房細動で通院中。会社員。
-前回（3/20）動悸を主訴に受診、24時間ホルター心電図装着。本日結果説明で来院。動悸は今週も2回自覚（飲酒後に多い）。脈の結滞感あり、持続時間は数分〜30分。胸痛・失神・呼吸困難なし。抗凝固薬の飲み忘れなし、歯科処置・出血エピソードなし。飲酒は週5日（ビール500ml+ハイボール2杯）、喫煙なし。父が心房細動、母が高血圧。`,
-			medList: `・アピキサバン5mg 2T2x`,
-			exam: ``,
-			labs: `バイタル: BP 128/80, HR 82（整）, BT 36.4, SpO2 98%
-ホルター結果: 発作性心房細動を計4回検出（最長12分）、心拍数コントロール良好、有意な徐脈・停止なし`,
-		},
-
-		// 患者16 林千尋 27歳女性（enc30, 動悸・疲労感）
-		{
-			encounterID: 30,
-			rawText: `27歳女性 既往なし。京都在住、看護師（3交代勤務）。
-1ヶ月前から労作時の動悸と全身倦怠感。安静時脈拍も以前より速い自覚あり。体重-4kg/3ヶ月（ダイエットの意図なし）。食欲は亢進、手指振戦あり、暑がりで発汗増加。月経は不順気味、排便1日2〜3回。精神的に焦燥感が強く、夜間入眠困難。過去に甲状腺疾患の指摘はなし。`,
-			medList: ``,
-			exam: `所見: 眼球突出軽度疑い、甲状腺びまん性腫大あり、手指微細振戦あり`,
-			labs: `バイタル: BP 130/70, HR 108（整）, BT 36.7, SpO2 99%
-採血（本日オーダー）: TSH・FT3・FT4測定予定`,
-		},
-
-		// 患者17 清水龍太 74歳男性（enc31, 両膝痛）
-		{
-			encounterID: 31,
-			rawText: `74歳男性 既往：高血圧。退職、妻と二人暮らし。
-6ヶ月前から両膝内側の疼痛が増悪傾向。階段昇降・起立動作で増悪、安静で軽減。歩行は平地500mで休憩が必要。朝のこわばりは15分程度。腫脹・発赤なし、熱感軽度。NSAIDs内服歴あり（市販）。転倒歴なし。体重は84kg（BMI 29.4）。散歩は週3回だが、最近は減少。`,
-			medList: `・ARB`,
-			exam: `両膝所見: 内側関節裂隙に圧痛、軽度の関節液貯留疑い　可動域：屈曲120度、伸展-5度　内反変形軽度`,
-			labs: `バイタル: BP 140/84, HR 72, BT 36.3, SpO2 97%
-Xp所見予定（本日）: 膝関節正面・側面`,
-		},
-
-		// 患者18 森由美 45歳女性（enc32, 更年期様症状）
-		{
-			encounterID: 32,
-			rawText: `45歳女性 既往なし。宮城県在住、パート勤務。
-半年前から不定愁訴。ほてり・発汗（hot flush）が1日数回、特に入眠時に悪化し中途覚醒。月経周期はこの1年で25〜45日と不規則化、経血量減少傾向。情動不安定（些細なことで涙が出る）、肩こり・頭重感あり。抑うつ気分は軽度、希死念慮なし。甲状腺疾患の家族歴なし。月経不順の自覚開始後、動悸・息苦しさも時々あり。性機能問診は本人希望により簡略化。`,
-			medList: ``,
-			exam: ``,
-			labs: `バイタル: BP 124/78, HR 74, BT 36.5, SpO2 99%
-採血予定: FSH, LH, E2, TSH`,
-		},
-
-		// 患者19 阿部翔太 57歳男性（enc33, 高血圧・糖尿病定期フォロー）
-		{
-			encounterID: 33,
-			rawText: `57歳男性 高血圧・2型糖尿病で通院中。熊本在住、会社員（営業）。
-定期フォローで来院。自覚症状なし。自宅血圧は朝130〜140/80〜85台。仕事の外食・夜の接待が多く、塩分過多を自覚。運動習慣はほぼなし。服薬アドヒアランスは良好。喫煙は5年前に禁煙（以前20本/日×20年）、飲酒は週4日ビール500ml+焼酎。下肢のしびれ・視覚異常なし。排尿症状なし。父が脳梗塞、母が糖尿病。
-本日採血: HbA1c 7.5%, 空腹時血糖 156, LDL 142, TG 212, eGFR 68, 尿ACR 45（軽度アルブミン尿）`,
-			medList: `・テルミサルタン40mg
-・メトホルミン500mg 2T2x`,
-			exam: ``,
-			labs: `バイタル: BP 146/92, HR 78, BT 36.4, SpO2 98%`,
-		},
-
-		// 患者7 山本隆 77歳男性（enc35, 入院・進行中: 慢性心不全急性増悪）— 4セクション分割デモ
-		{
-			encounterID: 35,
-			rawText: `77歳男性、独居（妻が週3回訪問）、ADLは室内自立、屋外は娘の送迎要。
-現病歴: 2日前から労作時の息切れが増悪し、昨夜から夜間発作性呼吸困難と起座呼吸が出現。本日早朝に呼吸困難が増悪し、救急搬送。1週間前に孫の結婚祝いで塩分の多い食事を連日摂取。3日前から下腿浮腫が悪化し、体重は2日間で3kg増加。
-本人の言葉: 「むくみが気にならなくなったので、飲まなくていいと思って1週間前から利尿剤をやめていた」。
-既往:
-・慢性心不全（HFrEF、EF 32%）- 5年前診断
-・COPD（GOLD 3）- 10年前診断、在宅酸素療法（労作時1L/min）
-・陳旧性心筋梗塞（LAD領域）- 7年前PCI施行
-・高血圧症 - 20年前から
-・2型糖尿病 - 12年前から
-・慢性腎臓病 G3b（eGFR 35）
-アレルギー: ペニシリン系抗生剤（皮疹）
-家族歴: 父：心筋梗塞（65歳死亡）、母：高血圧・脳梗塞
-社会歴: 5年前まで30本/日×40年の喫煙歴（現在禁煙）。`,
-			medList: `・エナラプリル 5mg 1日1回
-・カルベジロール 10mg 1日2回
-・アゾセミド 60mg 1日1回（※自己中断中）
-・スピロノラクトン 25mg 1日1回（※自己中断中）
-・メトホルミン 500mg 1日2回
-・アトルバスタチン 10mg 1日1回
-・アスピリン 100mg 1日1回
-・吸入: チオトロピウム + インダカテロール/グリコピロニウム配合 1日1回`,
-			exam: `意識清明、GCS 15。起座呼吸。
-頸静脈怒張（+）。
-両側下腿浮腫（+++、圧痕性）。体重58.5kg（ドライ体重 55kg、+3.5kg）。
-肺: 両下肺背側にcoarse crackles（+）。
-心: 心尖部にIII音聴取。
-腹部: 軟、肝腫大を肋骨弓下2横指触知。`,
-			labs: `バイタル: BP 158/94, HR 112（整）, RR 26, BT 36.8, SpO2 88%（室内気）→ 93%（O2 3L/min）
-血液: BNP 1480 pg/mL, トロポニンT陰性, Cr 1.68（ベースライン 1.3）, K 4.6, Na 138, Hb 11.2, HbA1c 7.1%
-動脈血ガス: pH 7.38, PaO2 62, PaCO2 48, HCO3- 28（室内気）
-胸部X線: 心拡大（CTR 62%）、両側胸水、肺うっ血
-心電図: 洞性頻脈、陳旧性前壁梗塞、新規所見なし`,
-		},
-
-		// 患者20 池田里奈 32歳女性（enc34, 健診異常指摘・初診）
-		{
-			encounterID: 34,
-			rawText: `32歳女性 既往なし。鹿児島在住、IT企業勤務（在宅中心）。
-職場の健康診断で脂質異常（LDL 168）・HbA1c 6.2%（境界型糖尿病）を指摘され、初診で紹介受診。自覚症状なし。家族歴は母が2型糖尿病（50歳発症、経口薬）、父が脂質異常症。食事は朝食抜きが常態化、昼はコンビニ、夜は自炊だが炭水化物中心。間食（チョコ・スナック）は毎日。運動は在宅勤務開始後ほぼ消失、1日の歩数2000歩未満。飲酒は週末にワイン1杯、喫煙なし。月経は順調、妊娠歴なし、避妊はピルなし。体重はこの3年で+6kg（BMI 24.8）。
-院内採血依頼: 空腹時血糖、HbA1c再検、LDL/HDL/TG、肝機能、TSH`,
-			medList: ``,
-			exam: ``,
-			labs: `バイタル: BP 122/76, HR 74, BT 36.3, SpO2 99%`,
-		},
-
-		// 患者22 音声花子 62歳女性（enc37, 動悸主訴・循環器内科）
-		// 問診記録は音声認識(STT)の生出力風: 話者ラベルなし、句読点ほぼなし、
-		// フィラー・言い直し・同時発話による単語混在・聞き取り不能の空白を含む。
-		// 将来の音声入力連携テスト用のデータ。
-		{
-			encounterID: 37,
-			rawText: `今日はどうされましたか
-えーと あの 先週くらいから こう 胸がドキドキするというか
-いつ頃からですか
-先週の水曜 あ 違う木曜日だったかも
-どんな時にドキドキしますか
-階段上った時とか 夜 寝る時にも急に
-どれくらい続きますか
-数分くらいで治まるんですけど 長い時は10分くらい続いた
-こともあります
-痛みとか冷や汗あ痛みはちょっと胸が重たい感じで冷や汗は
-ないです
-一度だけ くらっと なった時もありました
-他に症状は
-坂道で息切れ あと 足がむくむかな 夕方
-お母様お父様で 心臓とか
-母が不整脈みたいなやつ はっきりはわかんないんですけど
-薬を飲んでたって
-お薬は
-血圧の アムロ なんだっけ アムロジピン 5ミリ 朝
-ちゃんと飲めてますか
-まあ だいたいは たまに忘れる時も
-
-タバコお酒は
-タバコ 吸ってないです お酒は週1、2回 ビール1本くらい
-今まで大きい病気とか
-ないです 健康診断で高血圧だけ ずっと`,
-			medList: `・アムロジピン 5mg 1日1回 朝食後（近医処方・高血圧）
-  ※服薬アドヒアランスやや不良（本人談「たまに飲み忘れる」）`,
-			exam: `一般状態: 意識清明、会話明瞭、表情平穏。
-頸部: 頸静脈怒張なし、甲状腺腫大なし。
-胸部: 心音不整（irregularly irregular）、II音亢進なし、雑音なし。
-      呼吸音清、ラ音なし。
-腹部: 平坦軟、圧痛なし、肝脾腫なし。
-下肢: 両下腿に軽度の圧痕性浮腫（+/-）。
-神経学的所見: 異常なし。`,
-			labs: `バイタル: BP 148/92, HR 88（不整）, RR 16, BT 36.4, SpO2 98%（RA）
-心電図: 心房細動（AF）、HR 92 bpm、ST-T 変化なし、QTc 正常。
-採血: WBC 6,200, Hb 13.2, Plt 24万, Na 140, K 4.1, Cr 0.78, eGFR 72,
-      BNP 145 pg/mL（軽度上昇）, TSH 1.8, FT4 1.2, HbA1c 5.6%, LDL 132。
-胸部X線: CTR 50%, 肺うっ血なし、両側胸水なし。
-心エコー: LVEF 58%, LA 41mm（軽度拡大）, 弁膜症なし, 下大静脈正常。`,
-		},
+func parseFamilyHistory(item string) (relation, condition, notes string) {
+	item = strings.TrimSpace(item)
+	if item == "" {
+		return "家族歴", "未確認", ""
 	}
-
-	for _, n := range interviewNotes {
-		_, err := tx.Exec(
-			`INSERT INTO interview_notes (encounter_id, raw_text, medication_list, exam_findings, lab_results) VALUES (?,?,?,?,?)`,
-			n.encounterID, n.rawText, n.medList, n.exam, n.labs,
-		)
-		if err != nil {
-			return fmt.Errorf("insert interview note for encounter %d: %w", n.encounterID, err)
-		}
+	idx := strings.IndexAny(item, ":：")
+	if idx < 0 {
+		return "家族歴", item, ""
 	}
+	relation = strings.TrimSpace(item[:idx])
+	condition = strings.TrimSpace(item[idx+1:])
+	if relation == "" {
+		relation = "家族歴"
+	}
+	if condition == "" {
+		condition = item
+	}
+	return relation, condition, item
+}
 
-	return tx.Commit()
+func birthDateForAge(age int, encounterDate string) string {
+	t, err := time.Parse("2006-01-02", encounterDate)
+	if err != nil {
+		return fmt.Sprintf("%04d-01-01", 2026-age)
+	}
+	return fmt.Sprintf("%04d-01-01", t.Year()-age)
 }

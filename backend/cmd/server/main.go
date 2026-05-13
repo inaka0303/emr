@@ -70,6 +70,8 @@ func main() {
 	interviewHandler := handler.NewInterviewHandler(interviewSvc)
 
 	seedHandler := handler.NewSeedHandler(db)
+	experimentRepo := repository.NewExperimentRepository(db)
+	experimentHandler := handler.NewExperimentHandler(experimentRepo)
 
 	// SLMクライアント初期化
 	slmAPIURL := os.Getenv("SLM_API_URL")
@@ -97,6 +99,7 @@ func main() {
 	}
 
 	slmHandler := handler.NewSLMHandler(slmClient, encounterSvc, patientSvc)
+	slmHandler.SetExperimentRepository(experimentRepo)
 
 	// PatientHistoryService (過去受診サマリ、cross-encounter 要約)
 	// ENABLE_CROSS_ENCOUNTER_SUMMARY=false で明示的に無効化可能、
@@ -110,6 +113,7 @@ func main() {
 	// SOAPドラフト（DBキャッシュ付き）
 	soapDraftRepo := repository.NewSOAPDraftRepository(db)
 	soapDraftHandler := handler.NewSOAPDraftHandler(slmClient, soapDraftRepo, interviewSvc, encounterSvc, patientSvc, historySvc)
+	soapDraftHandler.SetExperimentRepository(experimentRepo)
 
 	// Echo初期化
 	e := echo.New()
@@ -121,7 +125,7 @@ func main() {
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
 		AllowOrigins: []string{"http://localhost:5173"},
 		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete},
-		AllowHeaders: []string{echo.HeaderContentType, echo.HeaderAccept},
+		AllowHeaders: []string{echo.HeaderContentType, echo.HeaderAccept, "X-Experiment-Attempt"},
 	}))
 
 	// ルーティング
@@ -173,8 +177,12 @@ func main() {
 
 	// RAG 検索（Python rag_server.py への proxy）
 	ragHandler := handler.NewRAGHandler()
+	ragHandler.SetExperimentRepository(experimentRepo)
 	api.POST("/rag/search", ragHandler.Search)
 	api.GET("/rag/health", ragHandler.Health)
+
+	// 実験 attempt / イベントログ
+	experimentHandler.RegisterRoutes(api.Group("/experiment"))
 
 	// SLM ルート
 	api.POST("/slm/suggest/soap", slmHandler.SuggestSOAP)

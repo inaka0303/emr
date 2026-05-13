@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/example/ehr-demo/internal/repository"
 	"github.com/example/ehr-demo/internal/service"
 	"github.com/example/ehr-demo/internal/slm"
 	"github.com/labstack/echo/v4"
@@ -16,11 +17,16 @@ type SLMHandler struct {
 	client       *slm.Client
 	encounterSvc *service.EncounterService
 	patientSvc   *service.PatientService
+	experiment   *repository.ExperimentRepository
 }
 
 // NewSLMHandler は新しいSLMHandlerを生成する
 func NewSLMHandler(client *slm.Client, encounterSvc *service.EncounterService, patientSvc *service.PatientService) *SLMHandler {
 	return &SLMHandler{client: client, encounterSvc: encounterSvc, patientSvc: patientSvc}
+}
+
+func (h *SLMHandler) SetExperimentRepository(repo *repository.ExperimentRepository) {
+	h.experiment = repo
 }
 
 // slmMeta はSLMレスポンスのメタ情報
@@ -40,7 +46,7 @@ type slmResponse struct {
 // EncounterID が指定されれば患者属性（年齢・性別）を自動で prompt 先頭に注入する。
 type suggestSOAPRequest struct {
 	InterviewText string `json:"interview_text"`
-	EncounterID  int64  `json:"encounter_id,omitempty"`
+	EncounterID   int64  `json:"encounter_id,omitempty"`
 }
 
 // suggestSummaryRequest はサマリー提案リクエスト
@@ -66,11 +72,24 @@ func (h *SLMHandler) SuggestSOAP(c echo.Context) error {
 		})
 	}
 
+	attempt, err := ensureExperimentAIAllowed(c, h.experiment, req.EncounterID)
+	if err != nil {
+		return experimentGuardResponse(c, err)
+	}
+
 	suggestion, isMock, latency, err := h.client.GenerateSOAP(c.Request().Context(), req.InterviewText)
 	if err != nil {
 		slog.Error("SOAP提案生成エラー", "error", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": "SOAP提案の生成に失敗しました",
+		})
+	}
+	if attempt != nil {
+		_ = h.experiment.AddAIUsage(c.Request().Context(), attempt.AttemptID, latency.Milliseconds(), 1)
+		_ = h.experiment.RecordEvent(c.Request().Context(), attempt.AttemptID, "slm_suggest_soap", map[string]interface{}{
+			"latency_ms": latency.Milliseconds(),
+			"is_mock":    isMock,
+			"text_len":   len([]rune(req.InterviewText)),
 		})
 	}
 
@@ -101,6 +120,11 @@ func (h *SLMHandler) SuggestAdmissionSummary(c echo.Context) error {
 		})
 	}
 
+	attempt, err := ensureExperimentAIAllowed(c, h.experiment, req.EncounterID)
+	if err != nil {
+		return experimentGuardResponse(c, err)
+	}
+
 	interviewText := req.InterviewText
 	if req.EncounterID > 0 && h.encounterSvc != nil && h.patientSvc != nil {
 		if enc, err := h.encounterSvc.GetByID(c.Request().Context(), req.EncounterID); err == nil && enc != nil {
@@ -117,6 +141,14 @@ func (h *SLMHandler) SuggestAdmissionSummary(c echo.Context) error {
 		slog.Error("入院時サマリ生成エラー", "error", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": "入院時サマリの生成に失敗しました",
+		})
+	}
+	if attempt != nil {
+		_ = h.experiment.AddAIUsage(c.Request().Context(), attempt.AttemptID, latency.Milliseconds(), 1)
+		_ = h.experiment.RecordEvent(c.Request().Context(), attempt.AttemptID, "slm_suggest_admission", map[string]interface{}{
+			"latency_ms": latency.Milliseconds(),
+			"is_mock":    isMock,
+			"text_len":   len([]rune(interviewText)),
 		})
 	}
 
@@ -153,11 +185,25 @@ func (h *SLMHandler) SuggestSummary(c echo.Context) error {
 		})
 	}
 
+	attempt, err := ensureExperimentAIAllowed(c, h.experiment, 0)
+	if err != nil {
+		return experimentGuardResponse(c, err)
+	}
+
 	suggestion, isMock, latency, err := h.client.GenerateSummary(c.Request().Context(), req.InterviewText, req.Category)
 	if err != nil {
 		slog.Error("サマリー提案生成エラー", "error", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": "サマリー提案の生成に失敗しました",
+		})
+	}
+	if attempt != nil {
+		_ = h.experiment.AddAIUsage(c.Request().Context(), attempt.AttemptID, latency.Milliseconds(), 1)
+		_ = h.experiment.RecordEvent(c.Request().Context(), attempt.AttemptID, "slm_suggest_summary", map[string]interface{}{
+			"category":   req.Category,
+			"latency_ms": latency.Milliseconds(),
+			"is_mock":    isMock,
+			"text_len":   len([]rune(req.InterviewText)),
 		})
 	}
 
@@ -195,6 +241,11 @@ func (h *SLMHandler) Autocomplete(c echo.Context) error {
 		})
 	}
 
+	attempt, err := ensureExperimentAIAllowed(c, h.experiment, 0)
+	if err != nil {
+		return experimentGuardResponse(c, err)
+	}
+
 	validContexts := map[string]bool{
 		"family_history":  true,
 		"social_history":  true,
@@ -211,6 +262,20 @@ func (h *SLMHandler) Autocomplete(c echo.Context) error {
 	}
 
 	result, isMock, latency := h.client.Autocomplete(req.Text, req.Context, req.InterviewText, req.PriorSections)
+	if attempt != nil {
+		candidateDelta := 0
+		if result != nil && result.Completion != "" {
+			candidateDelta = 1
+		}
+		_ = h.experiment.AddAIUsage(c.Request().Context(), attempt.AttemptID, latency.Milliseconds(), candidateDelta)
+		_ = h.experiment.RecordEvent(c.Request().Context(), attempt.AttemptID, "slm_autocomplete", map[string]interface{}{
+			"context":    req.Context,
+			"text_len":   len([]rune(req.Text)),
+			"has_output": candidateDelta == 1,
+			"latency_ms": latency.Milliseconds(),
+			"is_mock":    isMock,
+		})
+	}
 
 	return c.JSON(http.StatusOK, slmResponse{
 		Data: result,
