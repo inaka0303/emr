@@ -13,6 +13,8 @@ interface InterviewViewerProps {
   onFinalize?: (encounterId: number) => void;
   /** 既に確定済みか */
   finalized?: boolean;
+  /** Control条件ではSOAPの裏生成をしない */
+  aiEnabled?: boolean;
 }
 
 const DEBOUNCE_MS = 1000;
@@ -83,6 +85,7 @@ export default function InterviewViewer({
   onInterviewUpdated,
   onFinalize,
   finalized = false,
+  aiEnabled = true,
 }: InterviewViewerProps) {
   const [values, setValues] = useState<Values>(EMPTY_VALUES);
   const [saveState, setSaveState] = useState<'idle' | 'debouncing' | 'saving' | 'saved' | 'error'>('idle');
@@ -204,7 +207,7 @@ export default function InterviewViewer({
         {!isLoading && !error && (
           <div className="flex items-center justify-between pt-1 px-1">
             <p className="text-xs text-gray-500">
-              1秒停止ごとに保存＋SOAPを裏で再生成
+              {aiEnabled ? '1秒停止ごとに保存' : '1秒停止ごとに保存（AI補助なし）'}
             </p>
             {!finalized && encounterId != null && hasAnyContent && (
               <button

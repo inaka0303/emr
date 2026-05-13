@@ -19,6 +19,9 @@ interface SOAPEditorProps {
   encounterId?: number;
   patientId?: number;
   interviewText: string;
+  aiEnabled?: boolean;
+  experimentAttemptId?: string | null;
+  onExperimentEvent?: (eventType: string, payload?: Record<string, unknown>) => void;
   /** SOAP記録が既にある場合、自動ドラフトはスキップする */
   hasExistingSOAP?: boolean;
   /** 親でキャッシュ済みのドラフト状態（useSoapDraftCache から） */
@@ -60,6 +63,9 @@ export default function SOAPEditor({
   encounterId,
   patientId,
   interviewText,
+  aiEnabled = true,
+  experimentAttemptId = null,
+  onExperimentEvent,
   hasExistingSOAP = false,
   draftEntry = null,
 }: SOAPEditorProps) {
@@ -70,6 +76,7 @@ export default function SOAPEditor({
   const [draftMeta, setDraftMeta] = useState<{ latency_ms?: number; is_mock?: boolean } | null>(null);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = useState('');
+  const [editedDraftSections, setEditedDraftSections] = useState<Set<SectionKey>>(new Set());
 
   // encounter変更時、前回の状態をリセット
   useEffect(() => {
@@ -80,6 +87,7 @@ export default function SOAPEditor({
     setDraftMeta(null);
     setSaveStatus('idle');
     setErrorMessage('');
+    setEditedDraftSections(new Set());
   }, [encounterId]);
 
   // 親から渡される draftEntry を反映（SSE で逐次到着するセクションに追従）
@@ -88,6 +96,7 @@ export default function SOAPEditor({
   // generating / idle / draft はまだ SLM 管轄なので、到着したテキストで更新する。
   useEffect(() => {
     if (encounterId == null) return;
+    if (!aiEnabled) return;
     if (hasExistingSOAP) return;
     if (!draftEntry) return;
     if (draftEntry.encounterId !== encounterId) return;
@@ -136,14 +145,23 @@ export default function SOAPEditor({
     if (draftEntry.meta) {
       setDraftMeta(draftEntry.meta);
     }
-  }, [encounterId, hasExistingSOAP, draftEntry]);
+  }, [encounterId, aiEnabled, hasExistingSOAP, draftEntry]);
 
   const handleChange = useCallback((key: SectionKey, value: string) => {
+    if (aiEnabled && statuses[key] === 'accepted' && !editedDraftSections.has(key)) {
+      setEditedDraftSections((prev) => {
+        const next = new Set(prev);
+        next.add(key);
+        return next;
+      });
+      onExperimentEvent?.('ai_draft_edited', { section: key });
+    }
     setData((prev) => ({ ...prev, [key]: value }));
-  }, []);
+  }, [aiEnabled, editedDraftSections, onExperimentEvent, statuses]);
 
   // 全ドラフトを一括採用
   const acceptAll = useCallback(() => {
+    const acceptedSections = (Object.keys(statuses) as SectionKey[]).filter((k) => statuses[k] === 'draft');
     setData((prev) => ({
       subjective: statuses.subjective === 'draft' ? draftText.subjective : prev.subjective,
       objective: statuses.objective === 'draft' ? draftText.objective : prev.objective,
@@ -156,18 +174,23 @@ export default function SOAPEditor({
       assessment: prev.assessment === 'draft' ? 'accepted' : prev.assessment,
       plan: prev.plan === 'draft' ? 'accepted' : prev.plan,
     }));
-  }, [draftText, statuses]);
+    if (acceptedSections.length > 0) {
+      onExperimentEvent?.('ai_draft_accepted', { section: 'all', count: acceptedSections.length });
+    }
+  }, [draftText, onExperimentEvent, statuses]);
 
   const acceptSection = useCallback((key: SectionKey) => {
     setData((prev) => ({ ...prev, [key]: draftText[key] }));
     setStatuses((prev) => ({ ...prev, [key]: 'accepted' }));
-  }, [draftText]);
+    onExperimentEvent?.('ai_draft_accepted', { section: key, count: 1 });
+  }, [draftText, onExperimentEvent]);
 
   const rejectSection = useCallback((key: SectionKey) => {
     setData((prev) => ({ ...prev, [key]: '' }));
     setDraftText((prev) => ({ ...prev, [key]: '' }));
     setStatuses((prev) => ({ ...prev, [key]: 'manual' }));
-  }, []);
+    onExperimentEvent?.('ai_draft_rejected', { section: key, count: 1 });
+  }, [onExperimentEvent]);
 
   const handleSave = useCallback(async () => {
     if (!encounterId) {
@@ -179,13 +202,19 @@ export default function SOAPEditor({
     setErrorMessage('');
     try {
       await post(`/encounters/${encounterId}/soap`, data);
+      onExperimentEvent?.('soap_saved', {
+        subjective_len: data.subjective.length,
+        objective_len: data.objective.length,
+        assessment_len: data.assessment.length,
+        plan_len: data.plan.length,
+      });
       setSaveStatus('success');
       setTimeout(() => setSaveStatus('idle'), 3000);
     } catch (err) {
       setSaveStatus('error');
       setErrorMessage(err instanceof Error ? err.message : '保存に失敗しました');
     }
-  }, [data, encounterId]);
+  }, [data, encounterId, onExperimentEvent]);
 
   const hasAnyDraft = (Object.keys(statuses) as SectionKey[]).some((k) => statuses[k] === 'draft');
   const isGenerating = (Object.keys(statuses) as SectionKey[]).some((k) => statuses[k] === 'generating');
@@ -204,7 +233,10 @@ export default function SOAPEditor({
                 {draftMeta?.latency_ms ? ` (${(draftMeta.latency_ms / 1000).toFixed(1)}秒)` : ''}
               </span>
             )}
-            {!isGenerating && !hasAnyDraft && (
+            {!aiEnabled && (
+              <span className="ml-2 text-gray-500">Control条件: AI補助なし</span>
+            )}
+            {aiEnabled && !isGenerating && !hasAnyDraft && (
               <span className="ml-2 text-violet-500">Tab で補完を適用</span>
             )}
           </p>
@@ -272,17 +304,20 @@ export default function SOAPEditor({
                     onChange={(v) => handleChange(section.key, v)}
                     context={section.context}
                     patientId={patientId}
+                    enabled={aiEnabled}
+                    experimentAttemptId={experimentAttemptId}
                     interviewText={interviewText}
                     priorSections={buildPriorSectionsFor(section.key, data)}
                     placeholder={`${section.label}を入力...`}
                     rows={3}
                   />
                   {/* A/P セクションでは RAG で根拠を確認できる */}
-                  {(section.key === 'assessment' || section.key === 'plan') &&
+                  {aiEnabled && (section.key === 'assessment' || section.key === 'plan') &&
                     data[section.key] && data[section.key].trim().length > 5 && (
                       <RAGEvidencePanel
                         query={`${section.label}: ${data[section.key]}`}
                         label={`${section.letter}記載の根拠を確認`}
+                        experimentAttemptId={experimentAttemptId}
                       />
                     )}
                 </>

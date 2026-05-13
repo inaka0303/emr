@@ -10,7 +10,12 @@ interface UsePatientsResult {
   refetch: () => void;
 }
 
-export function usePatients(query: string): UsePatientsResult {
+interface UsePatientsOptions {
+  allowMockFallback?: boolean;
+}
+
+export function usePatients(query: string, options: UsePatientsOptions = {}): UsePatientsResult {
+  const { allowMockFallback = true } = options;
   const [patients, setPatients] = useState<Patient[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -35,6 +40,12 @@ export function usePatients(query: string): UsePatientsResult {
       // AbortError は無視
       if (err instanceof DOMException && err.name === 'AbortError') return;
 
+      if (!allowMockFallback) {
+        setError('APIに接続できません。実験モードではモックデータを表示しません。');
+        setPatients([]);
+        return;
+      }
+
       console.warn('API接続失敗、モックデータにフォールバック:', err);
       setError('APIに接続できません。モックデータを表示しています。');
 
@@ -55,7 +66,7 @@ export function usePatients(query: string): UsePatientsResult {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [allowMockFallback]);
 
   useEffect(() => {
     // デバウンス: 300ms

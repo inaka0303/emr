@@ -27,7 +27,12 @@ interface UsePatientDataResult {
   refetch: () => void;
 }
 
-export function usePatientData(patientId: number | null): UsePatientDataResult {
+interface UsePatientDataOptions {
+  allowMockFallback?: boolean;
+}
+
+export function usePatientData(patientId: number | null, options: UsePatientDataOptions = {}): UsePatientDataResult {
+  const { allowMockFallback = true } = options;
   const [encounters, setEncounters] = useState<Encounter[]>([]);
   const [soapNotes, setSoapNotes] = useState<SOAPNote[]>([]);
   const [medicalHistories, setMedicalHistories] = useState<MedicalHistory[]>([]);
@@ -72,6 +77,16 @@ export function usePatientData(patientId: number | null): UsePatientDataResult {
 
       setError(null);
     } catch (err) {
+      if (!allowMockFallback) {
+        setError('APIに接続できません。実験モードではモックデータを表示しません。');
+        setEncounters([]);
+        setSoapNotes([]);
+        setMedicalHistories([]);
+        setFamilyHistories([]);
+        setSocialHistories([]);
+        return;
+      }
+
       console.warn('API接続失敗、モックデータにフォールバック:', err);
       setError('APIに接続できません。モックデータを表示しています。');
 
@@ -90,7 +105,7 @@ export function usePatientData(patientId: number | null): UsePatientDataResult {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [allowMockFallback]);
 
   useEffect(() => {
     if (patientId === null) {

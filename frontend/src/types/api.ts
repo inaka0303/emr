@@ -119,6 +119,42 @@ export interface ApiResponse<T> {
   meta?: PaginationMeta;
 }
 
+// 実験attempt
+export interface ExperimentAttempt {
+  attempt_id: string;
+  subject_id: string;
+  case_id: string;
+  source_case_id: string;
+  intervention: 'ai' | 'control';
+  sequence_order: number;
+  patient_id: number;
+  encounter_id: number;
+  status: 'ready' | 'in_progress' | 'finished' | 'abandoned';
+  started_at?: string;
+  ended_at?: string;
+  duration_sec: number;
+  interruption_sec: number;
+  ai_wait_ms: number;
+  ai_candidate_count: number;
+  ai_accept_count: number;
+  ai_edit_count: number;
+  ai_reject_count: number;
+  notes: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExperimentFinishInput {
+  duration_sec: number;
+  interruption_sec: number;
+  ai_wait_ms?: number;
+  ai_candidate_count?: number;
+  ai_accept_count: number;
+  ai_edit_count: number;
+  ai_reject_count: number;
+  notes?: string;
+}
+
 // SLMレスポンス
 export interface SLMResponse<T> {
   data: T;

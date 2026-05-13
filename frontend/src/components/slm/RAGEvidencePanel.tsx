@@ -1,6 +1,4 @@
 import { useState } from 'react';
-import { post } from '../../api/client';
-
 interface RAGResult {
   parent_id: string;
   text: string;
@@ -21,6 +19,7 @@ interface RAGResponse {
 interface RAGEvidencePanelProps {
   query: string;
   label?: string;
+  experimentAttemptId?: string | null;
 }
 
 /**
@@ -28,7 +27,7 @@ interface RAGEvidencePanelProps {
  * 「根拠を確認」ボタン押下でRAG検索を起動（~10秒）し、
  * ヒットしたガイドライン名と引用文を表示する。
  */
-export default function RAGEvidencePanel({ query, label = '根拠を確認' }: RAGEvidencePanelProps) {
+export default function RAGEvidencePanel({ query, label = '根拠を確認', experimentAttemptId = null }: RAGEvidencePanelProps) {
   const [results, setResults] = useState<RAGResult[] | null>(null);
   const [elapsed, setElapsed] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -39,7 +38,16 @@ export default function RAGEvidencePanel({ query, label = '根拠を確認' }: R
     setIsLoading(true);
     setError(null);
     try {
-      const resp = await post<RAGResponse>('/rag/search', { query, n: 5 });
+      const raw = await fetch('/api/rag/search', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(experimentAttemptId ? { 'X-Experiment-Attempt': experimentAttemptId } : {}),
+        },
+        body: JSON.stringify({ query, n: 5 }),
+      });
+      if (!raw.ok) throw new Error(await raw.text());
+      const resp = await raw.json() as RAGResponse;
       setResults(resp.data.results);
       setElapsed(resp.data.elapsed_ms);
     } catch (err) {

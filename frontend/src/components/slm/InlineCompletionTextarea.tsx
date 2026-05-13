@@ -6,6 +6,8 @@ interface InlineCompletionTextareaProps {
   onChange: (value: string) => void;
   context: string;
   patientId?: number;
+  enabled?: boolean;
+  experimentAttemptId?: string | null;
   placeholder?: string;
   rows?: number;
   className?: string;
@@ -22,6 +24,8 @@ export default function InlineCompletionTextarea({
   onChange,
   context,
   patientId,
+  enabled = true,
+  experimentAttemptId,
   placeholder,
   rows = 3,
   className = '',
@@ -37,7 +41,7 @@ export default function InlineCompletionTextarea({
 
   const { completion, isLoading, accept, dismiss } = useInlineCompletion(
     value,
-    { context, patientId, interviewText, priorSections },
+    { context, patientId, enabled, experimentAttemptId, interviewText, priorSections },
   );
 
   // テキストエリアとオーバーレイのスクロールを同期
@@ -143,7 +147,7 @@ export default function InlineCompletionTextarea({
         />
 
         {/* ローディングインジケーター */}
-        {isLoading && (
+        {enabled && isLoading && (
           <div className="absolute top-2 right-2 z-20">
             <div className="w-3 h-3 border-2 border-primary-300 border-t-transparent rounded-full animate-spin" />
           </div>
@@ -151,7 +155,7 @@ export default function InlineCompletionTextarea({
       </div>
 
       {/* ヒント */}
-      {completion && isFocused && (
+      {enabled && completion && isFocused && (
         <p className="text-xs text-gray-400 mt-1">
           <kbd className="px-1 py-0.5 text-xs bg-gray-100 border border-gray-200 rounded">
             Tab

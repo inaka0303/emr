@@ -203,8 +203,12 @@ func main() {
 	})
 
 	// サーバー起動
-	slog.Info("サーバー起動", "port", 8080)
-	if err := e.Start(":8080"); err != nil && err != http.ErrServerClosed {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	slog.Info("サーバー起動", "port", port)
+	if err := e.Start(":" + port); err != nil && err != http.ErrServerClosed {
 		slog.Error("サーバーエラー", "error", err)
 		os.Exit(1)
 	}

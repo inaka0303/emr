@@ -38,7 +38,7 @@ const SECTION_KEY_BY_LETTER: Record<string, keyof SLMSoapSuggestion> = {
  *     遅れて到着したonSectionで新しい世代のエントリが上書きされ、P だけが残る等のバグが起きる）
  *  - 世代(generation)番号を使って、古いstreamのコールバックを無視する二重防御
  */
-export function useSoapDraftCache() {
+export function useSoapDraftCache(experimentAttemptId?: string | null) {
   const inflightRef = useRef<Map<number, Promise<void>>>(new Map());
   const abortRef = useRef<Map<number, AbortController>>(new Map());
   const entriesRef = useRef<Map<number, SoapDraftEntry>>(new Map());
@@ -101,7 +101,7 @@ export function useSoapDraftCache() {
     const controller = new AbortController();
     abortRef.current.set(encounterId, controller);
 
-    const p = streamSoapDraft(encounterId, force, controller.signal, {
+    const p = streamSoapDraft(encounterId, force, controller.signal, experimentAttemptId ?? null, {
       onSection: (letter, text) => {
         const key = SECTION_KEY_BY_LETTER[letter];
         if (!key) return;
@@ -135,7 +135,7 @@ export function useSoapDraftCache() {
     });
 
     inflightRef.current.set(encounterId, p);
-  }, [updateEntry]);
+  }, [experimentAttemptId, updateEntry]);
 
   const get = useCallback(
     (encounterId: number | null): SoapDraftEntry | null => {
@@ -173,11 +173,15 @@ async function streamSoapDraft(
   encounterId: number,
   force: boolean,
   signal: AbortSignal,
+  experimentAttemptId: string | null,
   handlers: StreamHandlers,
 ): Promise<void> {
   const resp = await fetch(`/api/encounters/${encounterId}/soap-draft/stream`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(experimentAttemptId ? { 'X-Experiment-Attempt': experimentAttemptId } : {}),
+    },
     body: JSON.stringify({ force }),
     signal,
   });

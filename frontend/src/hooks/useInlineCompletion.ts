@@ -18,6 +18,8 @@ interface UseInlineCompletionOptions {
   context: string;
   debounceMs?: number;
   patientId?: number;
+  enabled?: boolean;
+  experimentAttemptId?: string | null;
   /** 問診全文（suggest LoRA訓練分布に合わせてSLMに渡す） */
   interviewText?: string;
   /** 既記載セクション（キー "S"/"O"/"A" など、現セクションより前のもの） */
@@ -36,7 +38,15 @@ export function useInlineCompletion(
   text: string,
   options: UseInlineCompletionOptions,
 ): UseInlineCompletionReturn {
-  const { context, debounceMs = 300, patientId, interviewText, priorSections } = options;
+  const {
+    context,
+    debounceMs = 300,
+    patientId,
+    enabled = true,
+    experimentAttemptId,
+    interviewText,
+    priorSections,
+  } = options;
 
   const [completion, setCompletion] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -52,8 +62,8 @@ export function useInlineCompletion(
       clearTimeout(debounceTimerRef.current);
     }
 
-    // テキストが空 or 1文字未満の場合はリクエストしない
-    if (text.length < 2) {
+    // AI無効時、またはテキストが空/短い場合はリクエストしない
+    if (!enabled || text.length < 2) {
       setCompletion('');
       fullTextRef.current = '';
       setIsLoading(false);
@@ -73,7 +83,10 @@ export function useInlineCompletion(
 
       fetch(`${BASE_URL}/slm/autocomplete`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(experimentAttemptId ? { 'X-Experiment-Attempt': experimentAttemptId } : {}),
+        },
         body: JSON.stringify({
           text,
           context,
@@ -113,7 +126,7 @@ export function useInlineCompletion(
     };
     // priorSections は参照が毎回変わりうるのでJSON化して依存を安定させる
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [text, context, patientId, debounceMs, interviewText, JSON.stringify(priorSections ?? {})]);
+  }, [text, context, patientId, debounceMs, enabled, experimentAttemptId, interviewText, JSON.stringify(priorSections ?? {})]);
 
   // クリーンアップ
   useEffect(() => {
