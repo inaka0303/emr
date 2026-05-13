@@ -245,6 +245,9 @@ export default function Layout() {
       experimentStartedAt != null
         ? Math.max(1, Math.floor((Date.now() - experimentStartedAt) / 1000))
         : experimentElapsedSec;
+    if (durationSec < 60 && !window.confirm('開始から60秒未満です。本当にこのattemptを終了しますか?')) {
+      return;
+    }
     const body: ExperimentFinishInput = {
       duration_sec: durationSec,
       interruption_sec: 0,

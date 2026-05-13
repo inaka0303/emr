@@ -88,6 +88,7 @@ var (
 //   - 単独の `---`
 //   - 前置き文（「ご提示いただいた〜」「以下の通り〜」）
 //   - 末尾の「作成者: AI」フッター
+//
 // stripPrefaceExplanation は先頭の 【解説】 等の前置きブロックを、
 // 最初の SOAP セクションマーカー直前までまとめて削除する。
 // lookahead が RE2 で使えないため関数で実装。
@@ -162,12 +163,14 @@ func cleanModelOutput(s string) string {
 const modelName = "qwen3.5-4b-medical"
 
 // LoRA ID constants (4B llama-server --lora の順序に対応、3-LoRA本番構成)
-//   id 0: sft_4b_nocpt_A              → suggest（prefill 補完・SOAPストリーミング） ★
-//   id 1: sft_soap_full_v2_r64_lora   → SOAP全体 (Phase5 eval で 4B best) ★
-//   id 2: sft_admission_v2_r32_lora   → admission fallback (9B未接続時のみ使用)
+//
+//	id 0: sft_4b_nocpt_A              → suggest（prefill 補完・SOAPストリーミング） ★
+//	id 1: sft_soap_full_v2_r64_lora   → SOAP全体 (Phase5 eval で 4B best) ★
+//	id 2: sft_admission_v2_r32_lora   → admission fallback (9B未接続時のみ使用)
 //
 // 9B admission サーバー (port 8083, optional) の LoRA 構成:
-//   id 0: sft_admission_9b_v3_clean_r32 ★ admission 本番 (Phase5 eval で md=87 最良)
+//
+//	id 0: sft_admission_9b_v3_clean_r32 ★ admission 本番 (Phase5 eval で md=87 最良)
 const (
 	LoRASuggestID     = 0 // 4B: インライン補完・SOAPストリーミング4-call
 	LoRASOAPFullID    = 1 // 4B: SOAP全体 (v2_r64, Phase5 eval best)
@@ -272,7 +275,7 @@ func NewClient(baseURL string) *Client {
 	c := &Client{
 		baseURL: baseURL,
 		httpClient: &http.Client{
-			Timeout: 60 * time.Second,
+			Timeout: 90 * time.Second,
 		},
 		useMock:      true, // 初期はモック
 		activeLoRAID: -1,   // 未設定
@@ -393,8 +396,9 @@ func (c *Client) ModelName() string {
 }
 
 // SectionCallback は GenerateSOAPStreaming が各セクション生成完了時に呼ぶコールバック
-//   section: "S" | "O" | "A" | "P"
-//   text: そのセクションの本文（冒頭の "S:" 等は除去済み）
+//
+//	section: "S" | "O" | "A" | "P"
+//	text: そのセクションの本文（冒頭の "S:" 等は除去済み）
 type SectionCallback func(section, text string)
 
 // GenerateSOAPStreaming は GenerateSOAP と同じ 4 セクション逐次生成を行うが、
