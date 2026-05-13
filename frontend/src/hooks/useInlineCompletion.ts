@@ -18,6 +18,7 @@ interface UseInlineCompletionOptions {
   context: string;
   debounceMs?: number;
   patientId?: number;
+  encounterId?: number;
   enabled?: boolean;
   experimentAttemptId?: string | null;
   /** 問診全文（suggest LoRA訓練分布に合わせてSLMに渡す） */
@@ -42,6 +43,7 @@ export function useInlineCompletion(
     context,
     debounceMs = 300,
     patientId,
+    encounterId,
     enabled = true,
     experimentAttemptId,
     interviewText,
@@ -91,6 +93,7 @@ export function useInlineCompletion(
           text,
           context,
           ...(patientId != null ? { patient_id: patientId } : {}),
+          ...(encounterId != null ? { encounter_id: encounterId } : {}),
           ...(interviewText ? { interview_text: interviewText } : {}),
           ...(priorSections && Object.keys(priorSections).length > 0
             ? { prior_sections: priorSections }
@@ -126,7 +129,7 @@ export function useInlineCompletion(
     };
     // priorSections は参照が毎回変わりうるのでJSON化して依存を安定させる
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [text, context, patientId, debounceMs, enabled, experimentAttemptId, interviewText, JSON.stringify(priorSections ?? {})]);
+  }, [text, context, patientId, encounterId, debounceMs, enabled, experimentAttemptId, interviewText, JSON.stringify(priorSections ?? {})]);
 
   // クリーンアップ
   useEffect(() => {

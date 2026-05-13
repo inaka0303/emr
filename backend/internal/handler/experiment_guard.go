@@ -12,6 +12,7 @@ import (
 )
 
 const experimentAttemptHeader = "X-Experiment-Attempt"
+const experimentWarmupHeader = "X-Experiment-Warmup"
 
 func getExperimentAttemptID(c echo.Context) string {
 	if v := strings.TrimSpace(c.Request().Header.Get(experimentAttemptHeader)); v != "" {
@@ -21,6 +22,11 @@ func getExperimentAttemptID(c echo.Context) string {
 		return strings.ToUpper(v)
 	}
 	return ""
+}
+
+func isExperimentWarmup(c echo.Context) bool {
+	v := strings.ToLower(strings.TrimSpace(c.Request().Header.Get(experimentWarmupHeader)))
+	return v == "1" || v == "true" || v == "yes"
 }
 
 func ensureExperimentAIAllowed(

@@ -39,6 +39,8 @@ func TestRunSeedsExperimentAttempts(t *testing.T) {
 	assertWhereCount(t, db, "experiment_attempts", "intervention = 'control'", 16)
 	assertWhereCount(t, db, "patients", "mrn = 'MRN-0021'", 1)
 	assertWhereCount(t, db, "patients", "mrn = 'MRN-0001'", 0)
+	assertWhereCount(t, db, "patients", "mrn = 'EXP-A01' AND name = '実験患者 A01'", 1)
+	assertWhereCount(t, db, "patients", "name LIKE '症例C%'", 0)
 	assertWhereCount(t, db, "experiment_attempts", "attempt_id = 'A01' AND subject_id = 'S1' AND case_id = 'C1' AND intervention = 'ai'", 1)
 }
 

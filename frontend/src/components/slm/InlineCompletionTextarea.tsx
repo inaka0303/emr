@@ -6,6 +6,7 @@ interface InlineCompletionTextareaProps {
   onChange: (value: string) => void;
   context: string;
   patientId?: number;
+  encounterId?: number;
   enabled?: boolean;
   experimentAttemptId?: string | null;
   placeholder?: string;
@@ -24,6 +25,7 @@ export default function InlineCompletionTextarea({
   onChange,
   context,
   patientId,
+  encounterId,
   enabled = true,
   experimentAttemptId,
   placeholder,
@@ -41,7 +43,7 @@ export default function InlineCompletionTextarea({
 
   const { completion, isLoading, accept, dismiss } = useInlineCompletion(
     value,
-    { context, patientId, enabled, experimentAttemptId, interviewText, priorSections },
+    { context, patientId, encounterId, enabled, experimentAttemptId, interviewText, priorSections },
   );
 
   // テキストエリアとオーバーレイのスクロールを同期

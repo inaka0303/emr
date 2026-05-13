@@ -15,6 +15,8 @@ interface InterviewViewerProps {
   finalized?: boolean;
   /** Control条件ではSOAPの裏生成をしない */
   aiEnabled?: boolean;
+  /** 実験モードでは症例情報を固定し、被験者による誤編集を防ぐ */
+  readOnly?: boolean;
 }
 
 const DEBOUNCE_MS = 1000;
@@ -86,6 +88,7 @@ export default function InterviewViewer({
   onFinalize,
   finalized = false,
   aiEnabled = true,
+  readOnly = false,
 }: InterviewViewerProps) {
   const [values, setValues] = useState<Values>(EMPTY_VALUES);
   const [saveState, setSaveState] = useState<'idle' | 'debouncing' | 'saving' | 'saved' | 'error'>('idle');
@@ -125,6 +128,7 @@ export default function InterviewViewer({
   // debounce で保存（いずれかのフィールド変更で 1秒後に全フィールドまとめて POST）
   const isUserTyping = Object.values(values).some((v) => v.trim() !== '');
   useEffect(() => {
+    if (readOnly) return;
     if (encounterId == null) return;
     if (!isUserTyping) {
       setSaveState('idle');
@@ -167,7 +171,7 @@ export default function InterviewViewer({
       if (timerRef.current) clearTimeout(timerRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [values, encounterId]);
+  }, [readOnly, values, encounterId]);
 
   const hasAnyContent = Object.values(values).some((v) => v.trim() !== '');
 
@@ -201,13 +205,14 @@ export default function InterviewViewer({
               section={sec}
               value={values[sec.key]}
               onChange={(v) => handleFieldChange(sec.key, v)}
+              readOnly={readOnly}
             />
           ))}
 
         {!isLoading && !error && (
           <div className="flex items-center justify-between pt-1 px-1">
             <p className="text-xs text-gray-500">
-              {aiEnabled ? '1秒停止ごとに保存' : '1秒停止ごとに保存（AI補助なし）'}
+              {readOnly ? '症例情報は固定されています' : aiEnabled ? '1秒停止ごとに保存' : '1秒停止ごとに保存（AI補助なし）'}
             </p>
             {!finalized && encounterId != null && hasAnyContent && (
               <button
@@ -219,7 +224,11 @@ export default function InterviewViewer({
                 情報を確定してSOAP表示
               </button>
             )}
-            {finalized && <span className="text-xs text-emerald-600">確定済み ✓（編集継続可）</span>}
+            {finalized && (
+              <span className="text-xs text-emerald-600">
+                確定済み ✓{readOnly ? '' : '（編集継続可）'}
+              </span>
+            )}
           </div>
         )}
       </div>
@@ -232,10 +241,12 @@ function SectionField({
   section,
   value,
   onChange,
+  readOnly = false,
 }: {
   section: Section;
   value: string;
   onChange: (v: string) => void;
+  readOnly?: boolean;
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const trimmed = value.trim();
@@ -268,10 +279,17 @@ function SectionField({
       {!collapsed && (
         <textarea
           value={value}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => {
+            if (!readOnly) onChange(e.target.value);
+          }}
+          readOnly={readOnly}
           placeholder={section.placeholder}
           rows={section.minRows}
-          className="w-full text-sm leading-relaxed p-2.5 focus:outline-none focus:ring-2 focus:ring-teal-300 font-sans resize-y"
+          className={`w-full text-sm leading-relaxed p-2.5 focus:outline-none font-sans resize-y ${
+            readOnly
+              ? 'bg-white text-gray-800 cursor-default'
+              : 'focus:ring-2 focus:ring-teal-300'
+          }`}
         />
       )}
     </div>

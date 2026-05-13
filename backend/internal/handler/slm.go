@@ -85,6 +85,16 @@ func (h *SLMHandler) SuggestSOAP(c echo.Context) error {
 		})
 	}
 	if attempt != nil {
+		if isExperimentWarmup(c) {
+			return c.JSON(http.StatusOK, slmResponse{
+				Data: suggestion,
+				Meta: slmMeta{
+					Model:     h.client.ModelName(),
+					IsMock:    isMock,
+					LatencyMs: latency.Milliseconds(),
+				},
+			})
+		}
 		_ = h.experiment.AddAIUsage(c.Request().Context(), attempt.AttemptID, latency.Milliseconds(), 1)
 		_ = h.experiment.RecordEvent(c.Request().Context(), attempt.AttemptID, "slm_suggest_soap", map[string]interface{}{
 			"latency_ms": latency.Milliseconds(),
@@ -144,6 +154,16 @@ func (h *SLMHandler) SuggestAdmissionSummary(c echo.Context) error {
 		})
 	}
 	if attempt != nil {
+		if isExperimentWarmup(c) {
+			return c.JSON(http.StatusOK, slmResponse{
+				Data: summary,
+				Meta: slmMeta{
+					Model:     h.client.ModelName(),
+					IsMock:    isMock,
+					LatencyMs: latency.Milliseconds(),
+				},
+			})
+		}
 		_ = h.experiment.AddAIUsage(c.Request().Context(), attempt.AttemptID, latency.Milliseconds(), 1)
 		_ = h.experiment.RecordEvent(c.Request().Context(), attempt.AttemptID, "slm_suggest_admission", map[string]interface{}{
 			"latency_ms": latency.Milliseconds(),
@@ -198,6 +218,16 @@ func (h *SLMHandler) SuggestSummary(c echo.Context) error {
 		})
 	}
 	if attempt != nil {
+		if isExperimentWarmup(c) {
+			return c.JSON(http.StatusOK, slmResponse{
+				Data: suggestion,
+				Meta: slmMeta{
+					Model:     h.client.ModelName(),
+					IsMock:    isMock,
+					LatencyMs: latency.Milliseconds(),
+				},
+			})
+		}
 		_ = h.experiment.AddAIUsage(c.Request().Context(), attempt.AttemptID, latency.Milliseconds(), 1)
 		_ = h.experiment.RecordEvent(c.Request().Context(), attempt.AttemptID, "slm_suggest_summary", map[string]interface{}{
 			"category":   req.Category,
@@ -226,6 +256,7 @@ type autocompleteRequest struct {
 	Text          string            `json:"text"`
 	Context       string            `json:"context"`
 	PatientID     *int              `json:"patient_id,omitempty"`
+	EncounterID   int64             `json:"encounter_id,omitempty"`
 	InterviewText string            `json:"interview_text,omitempty"`
 	PriorSections map[string]string `json:"prior_sections,omitempty"`
 }
@@ -241,7 +272,7 @@ func (h *SLMHandler) Autocomplete(c echo.Context) error {
 		})
 	}
 
-	attempt, err := ensureExperimentAIAllowed(c, h.experiment, 0)
+	attempt, err := ensureExperimentAIAllowed(c, h.experiment, req.EncounterID)
 	if err != nil {
 		return experimentGuardResponse(c, err)
 	}
@@ -263,6 +294,16 @@ func (h *SLMHandler) Autocomplete(c echo.Context) error {
 
 	result, isMock, latency := h.client.Autocomplete(req.Text, req.Context, req.InterviewText, req.PriorSections)
 	if attempt != nil {
+		if isExperimentWarmup(c) {
+			return c.JSON(http.StatusOK, slmResponse{
+				Data: result,
+				Meta: slmMeta{
+					Model:     h.client.ModelName(),
+					IsMock:    isMock,
+					LatencyMs: latency.Milliseconds(),
+				},
+			})
+		}
 		candidateDelta := 0
 		if result != nil && result.Completion != "" {
 			candidateDelta = 1

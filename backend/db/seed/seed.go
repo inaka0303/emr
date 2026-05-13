@@ -232,8 +232,8 @@ func insertExperimentAttempt(tx *sql.Tx, def attemptSeed, c outpatientCase) erro
 	}
 	patientID, err := insertPatient(tx, seedPatient{
 		MRN:       "EXP-" + def.AttemptID,
-		Name:      fmt.Sprintf("症例%s %s", def.CaseID, def.AttemptID),
-		NameKana:  fmt.Sprintf("ショウレイ%s %s", def.CaseID, def.AttemptID),
+		Name:      fmt.Sprintf("実験患者 %s", def.AttemptID),
+		NameKana:  fmt.Sprintf("ジッケンカンジャ %s", def.AttemptID),
 		BirthDate: birthDateForAge(c.Patient.Age, c.Encounter.EncounterDate),
 		Gender:    c.Patient.Gender,
 		BloodType: bloodType,

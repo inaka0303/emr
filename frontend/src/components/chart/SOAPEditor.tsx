@@ -304,6 +304,7 @@ export default function SOAPEditor({
                     onChange={(v) => handleChange(section.key, v)}
                     context={section.context}
                     patientId={patientId}
+                    encounterId={encounterId}
                     enabled={aiEnabled}
                     experimentAttemptId={experimentAttemptId}
                     interviewText={interviewText}

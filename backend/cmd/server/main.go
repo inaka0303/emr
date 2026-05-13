@@ -123,9 +123,9 @@ func main() {
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
-		AllowOrigins: []string{"http://localhost:5173"},
+		AllowOrigins: allowedOrigins(),
 		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete},
-		AllowHeaders: []string{echo.HeaderContentType, echo.HeaderAccept, "X-Experiment-Attempt"},
+		AllowHeaders: []string{echo.HeaderContentType, echo.HeaderAccept, "X-Experiment-Attempt", "X-Experiment-Warmup"},
 	}))
 
 	// ルーティング
@@ -248,4 +248,22 @@ func runMigrations(db *sql.DB) error {
 		slog.Info("マイグレーション適用", "file", n)
 	}
 	return nil
+}
+
+func allowedOrigins() []string {
+	raw := os.Getenv("ALLOWED_ORIGINS")
+	if raw == "" {
+		return []string{"http://localhost:5173", "http://localhost:5174"}
+	}
+	var origins []string
+	for _, part := range strings.Split(raw, ",") {
+		origin := strings.TrimSpace(part)
+		if origin != "" {
+			origins = append(origins, origin)
+		}
+	}
+	if len(origins) == 0 {
+		return []string{"http://localhost:5173", "http://localhost:5174"}
+	}
+	return origins
 }

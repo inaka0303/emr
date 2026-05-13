@@ -26,6 +26,7 @@ func (h *ExperimentHandler) RegisterRoutes(g *echo.Group) {
 	g.GET("/attempts/:id", h.GetAttempt)
 	g.POST("/attempts/:id/start", h.StartAttempt)
 	g.POST("/attempts/:id/finish", h.FinishAttempt)
+	g.POST("/attempts/:id/reset", h.ResetAttempt)
 	g.POST("/attempts/:id/events", h.RecordEvent)
 }
 
@@ -57,10 +58,15 @@ func (h *ExperimentHandler) StartAttempt(c echo.Context) error {
 		if errors.Is(err, repository.ErrNotFound) {
 			return c.JSON(http.StatusNotFound, model.NewErrorResponse("NOT_FOUND", "実験attemptが見つかりません"))
 		}
+		if errors.Is(err, repository.ErrInvalidExperimentState) {
+			return c.JSON(http.StatusConflict, model.NewErrorResponse("INVALID_ATTEMPT_STATE", "ready状態のattemptだけ開始できます"))
+		}
 		slog.Error("実験attempt開始エラー", "error", err, "attempt_id", attemptID)
 		return c.JSON(http.StatusInternalServerError, model.NewErrorResponse("INTERNAL_ERROR", "実験attemptの開始に失敗しました"))
 	}
-	_ = h.repo.RecordEvent(c.Request().Context(), attemptID, "attempt_started", map[string]string{"source": "frontend"})
+	if err := h.repo.RecordEvent(c.Request().Context(), attemptID, "attempt_started", map[string]string{"source": "frontend"}); err != nil {
+		slog.Warn("実験イベント記録失敗", "error", err, "attempt_id", attemptID, "event_type", "attempt_started")
+	}
 	return c.JSON(http.StatusOK, model.NewSuccessResponse(attempt, nil))
 }
 
@@ -75,10 +81,28 @@ func (h *ExperimentHandler) FinishAttempt(c echo.Context) error {
 		if errors.Is(err, repository.ErrNotFound) {
 			return c.JSON(http.StatusNotFound, model.NewErrorResponse("NOT_FOUND", "実験attemptが見つかりません"))
 		}
+		if errors.Is(err, repository.ErrInvalidExperimentState) {
+			return c.JSON(http.StatusConflict, model.NewErrorResponse("INVALID_ATTEMPT_STATE", "in_progress状態のattemptだけ終了できます"))
+		}
 		slog.Error("実験attempt終了エラー", "error", err, "attempt_id", attemptID)
 		return c.JSON(http.StatusInternalServerError, model.NewErrorResponse("INTERNAL_ERROR", "実験attemptの終了に失敗しました"))
 	}
-	_ = h.repo.RecordEvent(c.Request().Context(), attemptID, "attempt_finished", input)
+	if err := h.repo.RecordEvent(c.Request().Context(), attemptID, "attempt_finished", input); err != nil {
+		slog.Warn("実験イベント記録失敗", "error", err, "attempt_id", attemptID, "event_type", "attempt_finished")
+	}
+	return c.JSON(http.StatusOK, model.NewSuccessResponse(attempt, nil))
+}
+
+func (h *ExperimentHandler) ResetAttempt(c echo.Context) error {
+	attemptID := strings.ToUpper(c.Param("id"))
+	attempt, err := h.repo.ResetAttempt(c.Request().Context(), attemptID)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return c.JSON(http.StatusNotFound, model.NewErrorResponse("NOT_FOUND", "実験attemptが見つかりません"))
+		}
+		slog.Error("実験attemptリセットエラー", "error", err, "attempt_id", attemptID)
+		return c.JSON(http.StatusInternalServerError, model.NewErrorResponse("INTERNAL_ERROR", "実験attemptのリセットに失敗しました"))
+	}
 	return c.JSON(http.StatusOK, model.NewSuccessResponse(attempt, nil))
 }
 

@@ -147,7 +147,7 @@ func (h *SOAPDraftHandler) GetOrGenerate(c echo.Context) error {
 	// キャッシュを確認
 	if !req.Force {
 		if d, err := h.draftRepo.GetByEncounterID(ctx, encounterID); err == nil {
-			if attempt != nil {
+			if attempt != nil && !isExperimentWarmup(c) {
 				_ = h.experiment.RecordEvent(ctx, attempt.AttemptID, "soap_draft_cache_hit", map[string]interface{}{
 					"encounter_id":  encounterID,
 					"generation_ms": d.GenerationMS,
@@ -216,7 +216,7 @@ func (h *SOAPDraftHandler) GetOrGenerate(c echo.Context) error {
 			slog.Warn("SOAPドラフトキャッシュ保存失敗（続行）", "error", err)
 		}
 	}
-	if attempt != nil {
+	if attempt != nil && !isExperimentWarmup(c) {
 		_ = h.experiment.AddAIUsage(ctx, attempt.AttemptID, latency.Milliseconds(), 1)
 		_ = h.experiment.RecordEvent(ctx, attempt.AttemptID, "soap_draft_generated", map[string]interface{}{
 			"encounter_id": encounterID,
@@ -300,7 +300,7 @@ func (h *SOAPDraftHandler) StreamGenerate(c echo.Context) error {
 	if !req.Force {
 		// キャッシュ読み取りは clientCtx で OK（短時間）
 		if d, err := h.draftRepo.GetByEncounterID(clientCtx, encounterID); err == nil {
-			if attempt != nil {
+			if attempt != nil && !isExperimentWarmup(c) {
 				_ = h.experiment.RecordEvent(clientCtx, attempt.AttemptID, "soap_draft_stream_cache_hit", map[string]interface{}{
 					"encounter_id":  encounterID,
 					"generation_ms": d.GenerationMS,
@@ -370,7 +370,7 @@ func (h *SOAPDraftHandler) StreamGenerate(c echo.Context) error {
 			GenerationMS: latency.Milliseconds(),
 		})
 	}
-	if attempt != nil {
+	if attempt != nil && !isExperimentWarmup(c) {
 		_ = h.experiment.AddAIUsage(genCtx, attempt.AttemptID, latency.Milliseconds(), 1)
 		_ = h.experiment.RecordEvent(genCtx, attempt.AttemptID, "soap_draft_stream_generated", map[string]interface{}{
 			"encounter_id": encounterID,

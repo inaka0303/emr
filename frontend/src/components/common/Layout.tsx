@@ -328,6 +328,7 @@ export default function Layout() {
               onFinalize={handleFinalize}
               finalized={finalizedEncounters.has(activeEncounter.id)}
               aiEnabled={aiEnabled}
+              readOnly={isExperimentMode}
             />
           </div>
           <div className="space-y-6">
@@ -481,7 +482,6 @@ function ExperimentBanner({
   onStart: () => void;
   onFinish: () => void;
 }) {
-  const interventionLabel = attempt?.intervention === 'ai' ? 'AI' : attempt?.intervention === 'control' ? 'Control' : '-';
   const canStart = attempt != null && attempt.status !== 'in_progress' && attempt.status !== 'finished';
   const canFinish = attempt != null && attempt.status === 'in_progress';
   return (
@@ -489,13 +489,12 @@ function ExperimentBanner({
       <div className="min-w-0">
         <div className="flex items-center gap-2 text-sm font-semibold">
           <span>{attempt?.attempt_id ?? '実験attempt'}</span>
-          <span className="text-gray-400">/</span>
-          <span>{attempt?.subject_id ?? '-'}</span>
-          <span className="text-gray-400">/</span>
-          <span>{attempt?.case_id ?? '-'}</span>
-          <span className={`px-2 py-0.5 rounded text-xs ${attempt?.intervention === 'ai' ? 'bg-violet-600' : 'bg-gray-600'}`}>
-            {interventionLabel}
-          </span>
+          {attempt && (
+            <span
+              className={`inline-block w-2 h-2 rounded-full ${attempt.intervention === 'ai' ? 'bg-violet-500' : 'bg-gray-500'}`}
+              aria-hidden="true"
+            />
+          )}
           {attempt?.status === 'finished' && <span className="text-emerald-300 text-xs">終了済み</span>}
         </div>
         <div className="text-xs text-gray-300 truncate">
