@@ -16,6 +16,10 @@ import {
   MOCK_SOCIAL_HISTORY,
 } from '../utils/mockData';
 
+interface RefetchOptions {
+  silent?: boolean;
+}
+
 interface UsePatientDataResult {
   encounters: Encounter[];
   soapNotes: SOAPNote[];
@@ -24,7 +28,7 @@ interface UsePatientDataResult {
   socialHistories: SocialHistory[];
   isLoading: boolean;
   error: string | null;
-  refetch: () => void;
+  refetch: (options?: RefetchOptions) => void;
 }
 
 interface UsePatientDataOptions {
@@ -41,8 +45,10 @@ export function usePatientData(patientId: number | null, options: UsePatientData
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchData = useCallback(async (pid: number) => {
-    setIsLoading(true);
+  const fetchData = useCallback(async (pid: number, fetchOptions: RefetchOptions = {}) => {
+    if (!fetchOptions.silent) {
+      setIsLoading(true);
+    }
     setError(null);
 
     try {
@@ -103,7 +109,9 @@ export function usePatientData(patientId: number | null, options: UsePatientData
       setFamilyHistories(MOCK_FAMILY_HISTORY.filter((h) => h.patient_id === pid));
       setSocialHistories(MOCK_SOCIAL_HISTORY.filter((h) => h.patient_id === pid));
     } finally {
-      setIsLoading(false);
+      if (!fetchOptions.silent) {
+        setIsLoading(false);
+      }
     }
   }, [allowMockFallback]);
 
@@ -120,9 +128,9 @@ export function usePatientData(patientId: number | null, options: UsePatientData
     fetchData(patientId);
   }, [patientId, fetchData]);
 
-  const refetch = useCallback(() => {
+  const refetch = useCallback((refetchOptions: RefetchOptions = {}) => {
     if (patientId !== null) {
-      fetchData(patientId);
+      fetchData(patientId, refetchOptions);
     }
   }, [patientId, fetchData]);
 

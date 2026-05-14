@@ -1,8 +1,9 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import { post } from '../../api/client';
+import { post, put } from '../../api/client';
 import InlineCompletionTextarea from '../slm/InlineCompletionTextarea';
 import RAGEvidencePanel from '../slm/RAGEvidencePanel';
 import type { SoapDraftEntry } from '../../hooks/useSoapDraftCache';
+import type { ApiResponse, SOAPNote } from '../../types/api';
 
 interface SOAPData {
   subjective: string;
@@ -23,8 +24,10 @@ interface SOAPEditorProps {
   experimentAttemptId?: string | null;
   draftStorageVersion?: string | null;
   onExperimentEvent?: (eventType: string, payload?: Record<string, unknown>) => void;
+  onSaved?: () => void;
   /** SOAP記録が既にある場合、自動ドラフトはスキップする */
   hasExistingSOAP?: boolean;
+  existingSOAPNote?: SOAPNote | null;
   /** 親でキャッシュ済みのドラフト状態（useSoapDraftCache から） */
   draftEntry?: SoapDraftEntry | null;
 }
@@ -63,6 +66,27 @@ const emptySOAPData: SOAPData = { subjective: '', objective: '', assessment: '',
 
 function hasSOAPContent(data: SOAPData): boolean {
   return Object.values(data).some((v) => v.trim() !== '');
+}
+
+function fromSOAPNote(note: SOAPNote): SOAPData {
+  return {
+    subjective: note.subjective ?? '',
+    objective: note.objective ?? '',
+    assessment: note.assessment ?? '',
+    plan: note.plan ?? '',
+  };
+}
+
+function parseSavedAt(note: SOAPNote | null | undefined): Date | null {
+  const value = note?.updated_at || note?.created_at;
+  if (!value) return null;
+  const normalized = value.includes('T') ? value : value.replace(' ', 'T');
+  const ms = Date.parse(normalized);
+  return Number.isNaN(ms) ? null : new Date(ms);
+}
+
+function formatSavedTime(date: Date): string {
+  return date.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
 function soapDraftStorageKey(
@@ -122,7 +146,9 @@ export default function SOAPEditor({
   experimentAttemptId = null,
   draftStorageVersion = null,
   onExperimentEvent,
+  onSaved,
   hasExistingSOAP = false,
+  existingSOAPNote = null,
   draftEntry = null,
 }: SOAPEditorProps) {
   const [data, setData] = useState<SOAPData>(emptySOAPData);
@@ -131,6 +157,9 @@ export default function SOAPEditor({
   const [draftError, setDraftError] = useState<string | null>(null);
   const [draftMeta, setDraftMeta] = useState<{ latency_ms?: number; is_mock?: boolean } | null>(null);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
+  const [savedNoteId, setSavedNoteId] = useState<number | null>(null);
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [editedDraftSections, setEditedDraftSections] = useState<Set<SectionKey>>(new Set());
   const draftStorageKey = useMemo(
@@ -143,15 +172,19 @@ export default function SOAPEditor({
   useEffect(() => {
     skipNextPersistRef.current = true;
     const stored = draftStorageKey ? readStoredSOAPDraft(draftStorageKey) : null;
-    setData(stored ?? emptySOAPData);
+    const existingData = existingSOAPNote ? fromSOAPNote(existingSOAPNote) : null;
+    setData(stored ?? existingData ?? emptySOAPData);
     setDraftText(emptySOAPData);
     setStatuses(initialStatus);
     setDraftError(null);
     setDraftMeta(null);
-    setSaveStatus('idle');
+    setSavedNoteId(existingSOAPNote?.id ?? null);
+    setLastSavedAt(parseSavedAt(existingSOAPNote));
+    setHasUnsavedChanges(stored != null);
+    setSaveStatus(existingSOAPNote && stored == null ? 'success' : 'idle');
     setErrorMessage('');
     setEditedDraftSections(new Set());
-  }, [draftStorageKey]);
+  }, [draftStorageKey, existingSOAPNote?.id, existingSOAPNote?.updated_at]);
 
   // 保存ボタン前の入力をブラウザに退避し、誤リロードでも復元できるようにする。
   useEffect(() => {
@@ -220,6 +253,11 @@ export default function SOAPEditor({
     }
   }, [encounterId, aiEnabled, hasExistingSOAP, draftEntry]);
 
+  const markUnsaved = useCallback(() => {
+    setHasUnsavedChanges(true);
+    setSaveStatus((prev) => (prev === 'success' ? 'idle' : prev));
+  }, []);
+
   const handleChange = useCallback((key: SectionKey, value: string) => {
     if (aiEnabled && statuses[key] === 'accepted' && !editedDraftSections.has(key)) {
       setEditedDraftSections((prev) => {
@@ -230,7 +268,8 @@ export default function SOAPEditor({
       onExperimentEvent?.('ai_draft_edited', { section: key });
     }
     setData((prev) => ({ ...prev, [key]: value }));
-  }, [aiEnabled, editedDraftSections, onExperimentEvent, statuses]);
+    markUnsaved();
+  }, [aiEnabled, editedDraftSections, markUnsaved, onExperimentEvent, statuses]);
 
   // 全ドラフトを一括採用
   const acceptAll = useCallback(() => {
@@ -248,22 +287,25 @@ export default function SOAPEditor({
       plan: prev.plan === 'draft' ? 'accepted' : prev.plan,
     }));
     if (acceptedSections.length > 0) {
+      markUnsaved();
       onExperimentEvent?.('ai_draft_accepted', { section: 'all', count: acceptedSections.length });
     }
-  }, [draftText, onExperimentEvent, statuses]);
+  }, [draftText, markUnsaved, onExperimentEvent, statuses]);
 
   const acceptSection = useCallback((key: SectionKey) => {
     setData((prev) => ({ ...prev, [key]: draftText[key] }));
     setStatuses((prev) => ({ ...prev, [key]: 'accepted' }));
+    markUnsaved();
     onExperimentEvent?.('ai_draft_accepted', { section: key, count: 1 });
-  }, [draftText, onExperimentEvent]);
+  }, [draftText, markUnsaved, onExperimentEvent]);
 
   const rejectSection = useCallback((key: SectionKey) => {
     setData((prev) => ({ ...prev, [key]: '' }));
     setDraftText((prev) => ({ ...prev, [key]: '' }));
     setStatuses((prev) => ({ ...prev, [key]: 'manual' }));
+    markUnsaved();
     onExperimentEvent?.('ai_draft_rejected', { section: key, count: 1 });
-  }, [onExperimentEvent]);
+  }, [markUnsaved, onExperimentEvent]);
 
   const handleSave = useCallback(async () => {
     if (!encounterId) {
@@ -274,7 +316,14 @@ export default function SOAPEditor({
     setSaveStatus('saving');
     setErrorMessage('');
     try {
-      await post(`/encounters/${encounterId}/soap`, data);
+      if (savedNoteId != null) {
+        await put(`/soap/${savedNoteId}`, data);
+        setLastSavedAt(new Date());
+      } else {
+        const res = await post<ApiResponse<SOAPNote>>(`/encounters/${encounterId}/soap`, data);
+        setSavedNoteId(res.data.id);
+        setLastSavedAt(parseSavedAt(res.data) ?? new Date());
+      }
       onExperimentEvent?.('soap_saved', {
         subjective_len: data.subjective.length,
         objective_len: data.objective.length,
@@ -282,16 +331,26 @@ export default function SOAPEditor({
         plan_len: data.plan.length,
       });
       removeStoredSOAPDraft(draftStorageKey);
+      setHasUnsavedChanges(false);
       setSaveStatus('success');
-      setTimeout(() => setSaveStatus('idle'), 3000);
+      onSaved?.();
     } catch (err) {
       setSaveStatus('error');
       setErrorMessage(err instanceof Error ? err.message : '保存に失敗しました');
     }
-  }, [data, draftStorageKey, encounterId, onExperimentEvent]);
+  }, [data, draftStorageKey, encounterId, onExperimentEvent, onSaved, savedNoteId]);
 
   const hasAnyDraft = (Object.keys(statuses) as SectionKey[]).some((k) => statuses[k] === 'draft');
   const isGenerating = (Object.keys(statuses) as SectionKey[]).some((k) => statuses[k] === 'generating');
+  const canSave = hasSOAPContent(data) && !hasAnyDraft && saveStatus !== 'saving' && (savedNoteId == null || hasUnsavedChanges);
+  const saveButtonLabel =
+    saveStatus === 'saving'
+      ? '保存中...'
+      : savedNoteId != null && !hasUnsavedChanges
+        ? '保存済み'
+        : savedNoteId != null
+          ? '変更を保存'
+          : '保存';
 
   return (
     <div className="bg-white rounded-lg border border-gray-200 shadow-sm">
@@ -404,16 +463,27 @@ export default function SOAPEditor({
 
       <div className="px-4 py-3 border-t border-gray-100 flex items-center justify-between">
         <div className="text-sm">
-          {saveStatus === 'success' && <span className="text-emerald-600">保存しました</span>}
+          {saveStatus === 'saving' && <span className="text-violet-600">保存中...</span>}
+          {lastSavedAt && !hasUnsavedChanges && saveStatus !== 'saving' && saveStatus !== 'error' && (
+            <span className="text-emerald-700 font-medium">
+              保存済み ✓ <span className="font-normal text-emerald-600">{formatSavedTime(lastSavedAt)}</span>
+            </span>
+          )}
+          {lastSavedAt && hasUnsavedChanges && saveStatus !== 'saving' && saveStatus !== 'error' && (
+            <span className="text-amber-700">保存後に未保存の変更があります</span>
+          )}
+          {!lastSavedAt && hasUnsavedChanges && saveStatus !== 'saving' && saveStatus !== 'error' && (
+            <span className="text-amber-700">未保存の記載があります</span>
+          )}
           {saveStatus === 'error' && <span className="text-red-600">{errorMessage}</span>}
         </div>
         <button
           onClick={handleSave}
-          disabled={saveStatus === 'saving' || hasAnyDraft}
+          disabled={!canSave}
           title={hasAnyDraft ? 'ドラフトを採用または却下してから保存してください' : ''}
           className="px-5 py-2 bg-primary-600 text-white text-sm font-medium rounded-lg hover:bg-primary-700 transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {saveStatus === 'saving' ? '保存中...' : '保存'}
+          {saveButtonLabel}
         </button>
       </div>
     </div>

@@ -18,6 +18,7 @@ import type {
   MainTab,
   MobileTab,
   Encounter,
+  SOAPNote,
   ApiResponse,
   ExperimentAttempt,
   ExperimentFinishInput,
@@ -139,6 +140,7 @@ export default function Layout() {
     socialHistories,
     isLoading: patientDataLoading,
     error: patientDataError,
+    refetch: refetchPatientData,
   } = usePatientData(selectedPatient?.id ?? null, { allowMockFallback: !isExperimentMode });
 
   const activeEncounter = useMemo(() => selectActiveEncounter(patientEncounters), [patientEncounters]);
@@ -150,6 +152,14 @@ export default function Layout() {
   const hasExistingSOAPForActive = useMemo(() => {
     if (!activeEncounter) return false;
     return soapNotes.some((n) => n.encounter_id === activeEncounter.id);
+  }, [soapNotes, activeEncounter]);
+  const existingSOAPForActive = useMemo<SOAPNote | null>(() => {
+    if (!activeEncounter) return null;
+    const notes = soapNotes.filter((n) => n.encounter_id === activeEncounter.id);
+    if (notes.length === 0) return null;
+    return [...notes].sort(
+      (a, b) => (parseDBTime(b.updated_at || b.created_at) ?? 0) - (parseDBTime(a.updated_at || a.created_at) ?? 0),
+    )[0];
   }, [soapNotes, activeEncounter]);
 
   // SOAPドラフトキャッシュ: 患者/受診選択と同時に先行生成し、カルテ表示で即反映
@@ -342,11 +352,13 @@ export default function Layout() {
                 encounterId={activeEncounter.id}
                 interviewText={interviewText}
                 hasExistingSOAP={hasExistingSOAPForActive}
+                existingSOAPNote={existingSOAPForActive}
                 draftEntry={soapDraftEntry}
                 aiEnabled={aiEnabled}
                 experimentAttemptId={isExperimentMode ? experimentAttemptId : null}
                 draftStorageVersion={isExperimentMode ? experimentAttempt?.updated_at ?? null : null}
                 onExperimentEvent={isExperimentMode ? recordExperimentEvent : undefined}
+                onSaved={() => refetchPatientData({ silent: true })}
               />
             ) : (
               <SoapPlaceholder draftEntry={soapDraftEntry} />
