@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { post } from '../../api/client';
 import InlineCompletionTextarea from '../slm/InlineCompletionTextarea';
 import RAGEvidencePanel from '../slm/RAGEvidencePanel';
@@ -58,6 +58,54 @@ const initialStatus: StatusMap = {
   plan: 'idle',
 };
 
+const emptySOAPData: SOAPData = { subjective: '', objective: '', assessment: '', plan: '' };
+
+function hasSOAPContent(data: SOAPData): boolean {
+  return Object.values(data).some((v) => v.trim() !== '');
+}
+
+function soapDraftStorageKey(encounterId?: number, experimentAttemptId?: string | null): string | null {
+  if (encounterId == null) return null;
+  return `emr:soap-editor-draft:${experimentAttemptId ?? 'general'}:${encounterId}`;
+}
+
+function readStoredSOAPDraft(key: string): SOAPData | null {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<SOAPData>;
+    return {
+      subjective: typeof parsed.subjective === 'string' ? parsed.subjective : '',
+      objective: typeof parsed.objective === 'string' ? parsed.objective : '',
+      assessment: typeof parsed.assessment === 'string' ? parsed.assessment : '',
+      plan: typeof parsed.plan === 'string' ? parsed.plan : '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredSOAPDraft(key: string, data: SOAPData) {
+  try {
+    if (!hasSOAPContent(data)) {
+      window.localStorage.removeItem(key);
+      return;
+    }
+    window.localStorage.setItem(key, JSON.stringify(data));
+  } catch {
+    /* localStorage unavailable: ignore and keep normal in-memory behavior */
+  }
+}
+
+function removeStoredSOAPDraft(key: string | null) {
+  if (!key) return;
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    /* ignore */
+  }
+}
+
 export default function SOAPEditor({
   patientName,
   encounterId,
@@ -69,26 +117,43 @@ export default function SOAPEditor({
   hasExistingSOAP = false,
   draftEntry = null,
 }: SOAPEditorProps) {
-  const [data, setData] = useState<SOAPData>({ subjective: '', objective: '', assessment: '', plan: '' });
-  const [draftText, setDraftText] = useState<SOAPData>({ subjective: '', objective: '', assessment: '', plan: '' });
+  const [data, setData] = useState<SOAPData>(emptySOAPData);
+  const [draftText, setDraftText] = useState<SOAPData>(emptySOAPData);
   const [statuses, setStatuses] = useState<StatusMap>(initialStatus);
   const [draftError, setDraftError] = useState<string | null>(null);
   const [draftMeta, setDraftMeta] = useState<{ latency_ms?: number; is_mock?: boolean } | null>(null);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = useState('');
   const [editedDraftSections, setEditedDraftSections] = useState<Set<SectionKey>>(new Set());
+  const draftStorageKey = useMemo(
+    () => soapDraftStorageKey(encounterId, experimentAttemptId),
+    [encounterId, experimentAttemptId],
+  );
+  const skipNextPersistRef = useRef(false);
 
   // encounter変更時、前回の状態をリセット
   useEffect(() => {
-    setData({ subjective: '', objective: '', assessment: '', plan: '' });
-    setDraftText({ subjective: '', objective: '', assessment: '', plan: '' });
+    skipNextPersistRef.current = true;
+    const stored = draftStorageKey ? readStoredSOAPDraft(draftStorageKey) : null;
+    setData(stored ?? emptySOAPData);
+    setDraftText(emptySOAPData);
     setStatuses(initialStatus);
     setDraftError(null);
     setDraftMeta(null);
     setSaveStatus('idle');
     setErrorMessage('');
     setEditedDraftSections(new Set());
-  }, [encounterId]);
+  }, [draftStorageKey]);
+
+  // 保存ボタン前の入力をブラウザに退避し、誤リロードでも復元できるようにする。
+  useEffect(() => {
+    if (!draftStorageKey) return;
+    if (skipNextPersistRef.current) {
+      skipNextPersistRef.current = false;
+      return;
+    }
+    writeStoredSOAPDraft(draftStorageKey, data);
+  }, [data, draftStorageKey]);
 
   // 親から渡される draftEntry を反映（SSE で逐次到着するセクションに追従）
   //
@@ -208,13 +273,14 @@ export default function SOAPEditor({
         assessment_len: data.assessment.length,
         plan_len: data.plan.length,
       });
+      removeStoredSOAPDraft(draftStorageKey);
       setSaveStatus('success');
       setTimeout(() => setSaveStatus('idle'), 3000);
     } catch (err) {
       setSaveStatus('error');
       setErrorMessage(err instanceof Error ? err.message : '保存に失敗しました');
     }
-  }, [data, encounterId, onExperimentEvent]);
+  }, [data, draftStorageKey, encounterId, onExperimentEvent]);
 
   const hasAnyDraft = (Object.keys(statuses) as SectionKey[]).some((k) => statuses[k] === 'draft');
   const isGenerating = (Object.keys(statuses) as SectionKey[]).some((k) => statuses[k] === 'generating');
