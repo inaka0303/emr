@@ -35,11 +35,112 @@ func buildHybridInput(n *model.InterviewNote) string {
 		sb.WriteString("\n")
 		sb.WriteString(body)
 	}
+	addSection("【患者情報】", formatStructuredPatientContext(n.StructuredData))
 	addSection("【問診記録】", n.RawText)
 	addSection("【お薬手帳より】", n.MedicationList)
 	addSection("【診察所見メモ】", n.ExamFindings)
 	addSection("【検査結果】", n.LabResults)
 	return sb.String()
+}
+
+func formatStructuredPatientContext(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var payload struct {
+		PatientInfo struct {
+			Age                 int                    `json:"age"`
+			Gender              string                 `json:"gender"`
+			BloodType           *string                `json:"blood_type"`
+			EncounterDate       string                 `json:"encounter_date"`
+			EncounterType       string                 `json:"encounter_type"`
+			Department          string                 `json:"department"`
+			ChiefComplaint      string                 `json:"chief_complaint"`
+			SecondaryComplaints []string               `json:"secondary_complaints"`
+			Comorbidities       []string               `json:"comorbidities"`
+			CurrentMedications  []string               `json:"current_medications"`
+			Allergies           []string               `json:"allergies"`
+			FamilyHistory       []string               `json:"family_history"`
+			SocialHistory       string                 `json:"social_history"`
+			ReceptionVitals     map[string]interface{} `json:"reception_vitals"`
+		} `json:"patient_info"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return ""
+	}
+	info := payload.PatientInfo
+	var lines []string
+	add := func(label, value string) {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			lines = append(lines, label+": "+value)
+		}
+	}
+	if info.Age > 0 || strings.TrimSpace(info.Gender) != "" {
+		add("年齢/性別", fmt.Sprintf("%d歳 %s", info.Age, info.Gender))
+	}
+	add("受診", strings.Join(nonEmpty([]string{info.EncounterDate, info.Department, info.EncounterType}), " / "))
+	add("主訴", info.ChiefComplaint)
+	add("副主訴", strings.Join(info.SecondaryComplaints, "、"))
+	add("既往", strings.Join(info.Comorbidities, "、"))
+	add("持参薬", strings.Join(info.CurrentMedications, "、"))
+	add("アレルギー", strings.Join(info.Allergies, "、"))
+	add("家族歴", strings.Join(info.FamilyHistory, "、"))
+	add("社会歴", info.SocialHistory)
+	add("受付バイタル", formatReceptionVitalsForPrompt(info.ReceptionVitals))
+	return strings.Join(lines, "\n")
+}
+
+func nonEmpty(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			out = append(out, strings.TrimSpace(value))
+		}
+	}
+	return out
+}
+
+func formatReceptionVitalsForPrompt(v map[string]interface{}) string {
+	if len(v) == 0 {
+		return ""
+	}
+	value := func(key string) string {
+		val, ok := v[key]
+		if !ok {
+			return ""
+		}
+		switch t := val.(type) {
+		case float64:
+			if t == float64(int64(t)) {
+				return strconv.FormatInt(int64(t), 10)
+			}
+			return strconv.FormatFloat(t, 'f', 1, 64)
+		case int:
+			return strconv.Itoa(t)
+		case string:
+			return t
+		default:
+			return fmt.Sprint(t)
+		}
+	}
+	var parts []string
+	if sys, dia := value("BP_sys"), value("BP_dia"); sys != "" && dia != "" {
+		parts = append(parts, fmt.Sprintf("BP %s/%s mmHg", sys, dia))
+	}
+	for _, item := range []struct {
+		Key, Label, Unit string
+	}{
+		{"HR", "HR", "/min"},
+		{"SpO2", "SpO2", "%"},
+		{"RR", "RR", "/min"},
+		{"BT", "BT", "℃"},
+	} {
+		if val := value(item.Key); val != "" {
+			parts = append(parts, item.Label+" "+val+item.Unit)
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 // SOAPDraftHandler はSOAPドラフト（キャッシュ付き）のHTTPハンドラ

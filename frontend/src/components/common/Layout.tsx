@@ -5,6 +5,7 @@ import MainContent from './MainContent';
 import PatientList from '../../pages/PatientList';
 import SOAPEditor from '../chart/SOAPEditor';
 import SOAPHistory from '../chart/SOAPHistory';
+import PatientContextPanel from '../chart/PatientContextPanel';
 import PatientDetail from '../patient/PatientDetail';
 import InterviewViewer from '../slm/InterviewViewer';
 import AdmissionSummaryDrafter from '../slm/AdmissionSummaryDrafter';
@@ -12,6 +13,7 @@ import { usePatients } from '../../hooks/usePatients';
 import { usePatientData } from '../../hooks/usePatientData';
 import { useEncounterInterview } from '../../hooks/useEncounterInterview';
 import { useSoapDraftCache, type SoapDraftEntry } from '../../hooks/useSoapDraftCache';
+import { parseStructuredData } from '../../utils/patientContext';
 import { get, post } from '../../api/client';
 import type {
   Patient,
@@ -147,6 +149,10 @@ export default function Layout() {
   const activeEncounterId = activeEncounter?.id ?? null;
   const { notes: interviewNotes, combinedText: interviewText, isLoading: interviewLoading, error: interviewError } =
     useEncounterInterview(activeEncounterId);
+  const patientContextInfo = useMemo(() => {
+    const structured = parseStructuredData(interviewNotes[0]?.structured_data);
+    return structured?.patient_info ?? null;
+  }, [interviewNotes]);
 
   // activeEncounterにSOAPが既に存在するかチェック（auto-draft抑止用）
   const hasExistingSOAPForActive = useMemo(() => {
@@ -328,6 +334,8 @@ export default function Layout() {
             </span>
           </div>
         </div>
+
+        <PatientContextPanel info={patientContextInfo} />
 
         {/* 問診（左）+ SOAP（右）の2カラム */}
         <div className="grid gap-6 lg:grid-cols-[minmax(280px,360px)_1fr]">

@@ -67,6 +67,37 @@ type outpatientCase struct {
 	InputPatternB   *string                 `json:"input_pattern_B"`
 }
 
+type experimentStructuredData struct {
+	Experiment  experimentContext  `json:"experiment"`
+	PatientInfo patientInfoContext `json:"patient_info"`
+}
+
+type experimentContext struct {
+	AttemptID     string `json:"attempt_id"`
+	SubjectID     string `json:"subject_id"`
+	CaseID        string `json:"case_id"`
+	SourceCaseID  string `json:"source_case_id"`
+	Intervention  string `json:"intervention"`
+	SequenceOrder int    `json:"sequence_order"`
+}
+
+type patientInfoContext struct {
+	Age                 int                    `json:"age"`
+	Gender              string                 `json:"gender"`
+	BloodType           *string                `json:"blood_type"`
+	EncounterDate       string                 `json:"encounter_date"`
+	EncounterType       string                 `json:"encounter_type"`
+	Department          string                 `json:"department"`
+	ChiefComplaint      string                 `json:"chief_complaint"`
+	SecondaryComplaints []string               `json:"secondary_complaints"`
+	Comorbidities       []string               `json:"comorbidities"`
+	CurrentMedications  []string               `json:"current_medications"`
+	Allergies           []string               `json:"allergies"`
+	FamilyHistory       []string               `json:"family_history"`
+	SocialHistory       string                 `json:"social_history"`
+	ReceptionVitals     map[string]interface{} `json:"reception_vitals"`
+}
+
 type outpatientCasePatient struct {
 	Age                int      `json:"age"`
 	Gender             string   `json:"gender"`
@@ -258,9 +289,13 @@ func insertExperimentAttempt(tx *sql.Tx, def attemptSeed, c outpatientCase) erro
 	if err != nil {
 		return fmt.Errorf("build interview %s: %w", def.SourceCaseID, err)
 	}
+	structuredData, err := buildExperimentStructuredData(def, c)
+	if err != nil {
+		return fmt.Errorf("build structured patient info %s: %w", def.SourceCaseID, err)
+	}
 	if _, err := tx.Exec(
-		`INSERT INTO interview_notes (encounter_id, raw_text, medication_list, exam_findings, lab_results) VALUES (?,?,?,?,?)`,
-		encounterID, rawText, medList, exam, labs,
+		`INSERT INTO interview_notes (encounter_id, raw_text, medication_list, exam_findings, lab_results, structured_data) VALUES (?,?,?,?,?,?)`,
+		encounterID, rawText, medList, exam, labs, structuredData,
 	); err != nil {
 		return fmt.Errorf("insert experiment interview %s: %w", def.AttemptID, err)
 	}
@@ -350,6 +385,40 @@ func buildInterviewSections(c outpatientCase) (rawText, medList, exam, labs stri
 		strings.TrimSpace(patternA.PhysicianSummary.ExamFindings),
 		strings.TrimSpace(patternA.PhysicianSummary.LabResults),
 		nil
+}
+
+func buildExperimentStructuredData(def attemptSeed, c outpatientCase) (string, error) {
+	payload := experimentStructuredData{
+		Experiment: experimentContext{
+			AttemptID:     def.AttemptID,
+			SubjectID:     def.SubjectID,
+			CaseID:        def.CaseID,
+			SourceCaseID:  def.SourceCaseID,
+			Intervention:  def.Intervention,
+			SequenceOrder: def.Order,
+		},
+		PatientInfo: patientInfoContext{
+			Age:                 c.Patient.Age,
+			Gender:              c.Patient.Gender,
+			BloodType:           c.Patient.BloodType,
+			EncounterDate:       c.Encounter.EncounterDate,
+			EncounterType:       c.Encounter.Type,
+			Department:          c.Encounter.Department,
+			ChiefComplaint:      c.Encounter.ChiefComplaint,
+			SecondaryComplaints: c.Encounter.SecondaryComplaints,
+			Comorbidities:       c.Patient.Comorbidities,
+			CurrentMedications:  c.Patient.CurrentMedications,
+			Allergies:           c.Patient.Allergies,
+			FamilyHistory:       c.Patient.FamilyHistory,
+			SocialHistory:       c.Patient.SocialHistory,
+			ReceptionVitals:     c.ReceptionVitals,
+		},
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 func trimSectionHeader(v, header string) string {

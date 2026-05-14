@@ -124,6 +124,7 @@ def latest_results(conn: sqlite3.Connection) -> list[dict[str, Any]]:
           i.medication_list AS source_medication_list,
           i.exam_findings AS source_exam_findings,
           i.lab_results AS source_lab_results,
+          i.structured_data AS source_structured_data,
           ls.id AS soap_note_id,
           ls.author AS soap_author,
           ls.subjective,
@@ -152,6 +153,19 @@ def latest_results(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         row["disease"] = disease
         row["pattern"] = pattern
         row["source_case_id_check"] = source_id
+        structured = parse_json(row.get("source_structured_data"))
+        patient_info = structured.get("patient_info", {}) if isinstance(structured, dict) else {}
+        row["source_patient_info_json"] = patient_info if isinstance(patient_info, dict) else {}
+        if isinstance(patient_info, dict):
+            row["source_patient_age"] = patient_info.get("age", "")
+            row["source_patient_gender"] = patient_info.get("gender", "")
+            row["source_secondary_complaints"] = join_list(patient_info.get("secondary_complaints"))
+            row["source_comorbidities"] = join_list(patient_info.get("comorbidities"))
+            row["source_current_medications"] = join_list(patient_info.get("current_medications"))
+            row["source_allergies"] = join_list(patient_info.get("allergies"))
+            row["source_family_history"] = join_list(patient_info.get("family_history"))
+            row["source_social_history"] = patient_info.get("social_history", "")
+            row["source_reception_vitals"] = patient_info.get("reception_vitals", {})
         row["soap_full_text"] = "\n\n".join(
             part
             for part in [
@@ -163,6 +177,23 @@ def latest_results(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             if part
         )
     return rows
+
+
+def parse_json(value: Any) -> Any:
+    if not value:
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(str(value))
+    except json.JSONDecodeError:
+        return None
+
+
+def join_list(value: Any) -> str:
+    if isinstance(value, list):
+        return " / ".join(str(v) for v in value)
+    return as_text(value)
 
 
 def all_soap_notes(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -249,7 +280,16 @@ def write_xlsx(path: Path, sheets: dict[str, list[dict[str, Any]]]) -> None:
             ws.auto_filter.ref = ws.dimensions
             for idx, field in enumerate(fields, start=1):
                 width = 14
-                if field in {"subjective", "objective", "assessment", "plan", "soap_full_text", "source_raw_text"}:
+                if field in {
+                    "subjective",
+                    "objective",
+                    "assessment",
+                    "plan",
+                    "soap_full_text",
+                    "source_raw_text",
+                    "source_patient_info_json",
+                    "source_social_history",
+                }:
                     width = 48
                 elif field in {"chief_complaint", "payload_json"}:
                     width = 36

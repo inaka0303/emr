@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { get } from '../api/client';
 import type { ApiResponse } from '../types/api';
+import { formatPatientInfoForPrompt, parseStructuredData, type ExperimentStructuredData } from '../utils/patientContext';
 
 export interface InterviewNote {
   id: number;
@@ -13,7 +14,7 @@ export interface InterviewNote {
   exam_findings: string;
   /** 検査結果（バイタル含む、採血・画像・心電図など） */
   lab_results: string;
-  structured_data?: string | null;
+  structured_data?: ExperimentStructuredData | string | null;
   created_at: string;
 }
 
@@ -64,6 +65,8 @@ export function useEncounterInterview(encounterId: number | null): UseEncounterI
       const t = (body ?? '').trim();
       if (t) parts.push(`${header}\n${t}`);
     };
+    const structured = parseStructuredData(n.structured_data);
+    push('【患者情報】', formatPatientInfoForPrompt(structured?.patient_info));
     push('【問診記録】', n.raw_text);
     push('【お薬手帳より】', n.medication_list);
     push('【診察所見メモ】', n.exam_findings);

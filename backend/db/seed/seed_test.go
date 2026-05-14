@@ -44,6 +44,8 @@ func TestRunSeedsExperimentAttempts(t *testing.T) {
 	assertWhereCount(t, db, "experiment_attempts", "attempt_id = 'A01' AND subject_id = 'S1' AND case_id = 'C1' AND intervention = 'ai'", 1)
 	assertWhereCount(t, db, "experiment_attempts ea JOIN patients p ON p.id = ea.patient_id JOIN encounters e ON e.id = ea.encounter_id JOIN interview_notes i ON i.encounter_id = e.id",
 		"ea.attempt_id = 'A01' AND p.birth_date = '1964-01-01' AND e.chief_complaint LIKE '1 時間前から続く前胸部%' AND i.raw_text LIKE '%胸が…強く押されるみたいに%' AND i.lab_results LIKE '%BP 145/92 mmHg%'", 1)
+	assertWhereCount(t, db, "experiment_attempts ea JOIN interview_notes i ON i.encounter_id = ea.encounter_id",
+		"ea.attempt_id = 'A01' AND i.structured_data LIKE '%\"age\":62%' AND i.structured_data LIKE '%アムロジピン 5mg 1錠 朝食後%' AND i.structured_data LIKE '%左肩から顎への放散痛%'", 1)
 	assertWhereCount(t, db, "experiment_attempts ea JOIN patients p ON p.id = ea.patient_id JOIN encounters e ON e.id = ea.encounter_id JOIN interview_notes i ON i.encounter_id = e.id",
 		"ea.attempt_id = 'A03' AND p.birth_date = '1956-01-01' AND e.chief_complaint LIKE '1 時間前から続く引き裂かれるような背部痛%' AND i.raw_text LIKE '%左 166/94%' AND i.lab_results LIKE '%BP 168/95 mmHg%'", 1)
 	assertWhereCount(t, db, "experiment_attempts ea JOIN patients p ON p.id = ea.patient_id JOIN encounters e ON e.id = ea.encounter_id JOIN interview_notes i ON i.encounter_id = e.id",
