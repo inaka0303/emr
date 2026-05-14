@@ -345,6 +345,7 @@ export default function Layout() {
                 draftEntry={soapDraftEntry}
                 aiEnabled={aiEnabled}
                 experimentAttemptId={isExperimentMode ? experimentAttemptId : null}
+                draftStorageVersion={isExperimentMode ? experimentAttempt?.updated_at ?? null : null}
                 onExperimentEvent={isExperimentMode ? recordExperimentEvent : undefined}
               />
             ) : (

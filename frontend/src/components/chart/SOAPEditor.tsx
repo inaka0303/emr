@@ -21,6 +21,7 @@ interface SOAPEditorProps {
   interviewText: string;
   aiEnabled?: boolean;
   experimentAttemptId?: string | null;
+  draftStorageVersion?: string | null;
   onExperimentEvent?: (eventType: string, payload?: Record<string, unknown>) => void;
   /** SOAP記録が既にある場合、自動ドラフトはスキップする */
   hasExistingSOAP?: boolean;
@@ -64,9 +65,15 @@ function hasSOAPContent(data: SOAPData): boolean {
   return Object.values(data).some((v) => v.trim() !== '');
 }
 
-function soapDraftStorageKey(encounterId?: number, experimentAttemptId?: string | null): string | null {
+function soapDraftStorageKey(
+  encounterId?: number,
+  experimentAttemptId?: string | null,
+  draftStorageVersion?: string | null,
+): string | null {
   if (encounterId == null) return null;
-  return `emr:soap-editor-draft:${experimentAttemptId ?? 'general'}:${encounterId}`;
+  const attemptKey = experimentAttemptId ?? 'general';
+  const versionKey = draftStorageVersion ?? 'current';
+  return `emr:soap-editor-draft:${attemptKey}:${versionKey}:${encounterId}`;
 }
 
 function readStoredSOAPDraft(key: string): SOAPData | null {
@@ -113,6 +120,7 @@ export default function SOAPEditor({
   interviewText,
   aiEnabled = true,
   experimentAttemptId = null,
+  draftStorageVersion = null,
   onExperimentEvent,
   hasExistingSOAP = false,
   draftEntry = null,
@@ -126,8 +134,8 @@ export default function SOAPEditor({
   const [errorMessage, setErrorMessage] = useState('');
   const [editedDraftSections, setEditedDraftSections] = useState<Set<SectionKey>>(new Set());
   const draftStorageKey = useMemo(
-    () => soapDraftStorageKey(encounterId, experimentAttemptId),
-    [encounterId, experimentAttemptId],
+    () => soapDraftStorageKey(encounterId, experimentAttemptId, draftStorageVersion),
+    [encounterId, experimentAttemptId, draftStorageVersion],
   );
   const skipNextPersistRef = useRef(false);
 
