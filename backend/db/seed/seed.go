@@ -192,6 +192,9 @@ func loadExperimentCases() (map[string]outpatientCase, error) {
 		if err := json.Unmarshal(b, &c); err != nil {
 			return nil, fmt.Errorf("parse outpatient case %s: %w", id, err)
 		}
+		if override, ok := experimentDocsCaseOverrides[id]; ok {
+			c = override
+		}
 		out[id] = c
 	}
 	return out, nil

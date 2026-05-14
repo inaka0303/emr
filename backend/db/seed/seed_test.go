@@ -42,6 +42,14 @@ func TestRunSeedsExperimentAttempts(t *testing.T) {
 	assertWhereCount(t, db, "patients", "mrn = 'EXP-A01' AND name = '実験患者 A01'", 1)
 	assertWhereCount(t, db, "patients", "name LIKE '症例C%'", 0)
 	assertWhereCount(t, db, "experiment_attempts", "attempt_id = 'A01' AND subject_id = 'S1' AND case_id = 'C1' AND intervention = 'ai'", 1)
+	assertWhereCount(t, db, "experiment_attempts ea JOIN patients p ON p.id = ea.patient_id JOIN encounters e ON e.id = ea.encounter_id JOIN interview_notes i ON i.encounter_id = e.id",
+		"ea.attempt_id = 'A01' AND p.birth_date = '1964-01-01' AND e.chief_complaint LIKE '1 時間前から続く前胸部%' AND i.raw_text LIKE '%胸が…強く押されるみたいに%' AND i.lab_results LIKE '%BP 145/92 mmHg%'", 1)
+	assertWhereCount(t, db, "experiment_attempts ea JOIN patients p ON p.id = ea.patient_id JOIN encounters e ON e.id = ea.encounter_id JOIN interview_notes i ON i.encounter_id = e.id",
+		"ea.attempt_id = 'A03' AND p.birth_date = '1956-01-01' AND e.chief_complaint LIKE '1 時間前から続く引き裂かれるような背部痛%' AND i.raw_text LIKE '%左 166/94%' AND i.lab_results LIKE '%BP 168/95 mmHg%'", 1)
+	assertWhereCount(t, db, "experiment_attempts ea JOIN patients p ON p.id = ea.patient_id JOIN encounters e ON e.id = ea.encounter_id JOIN interview_notes i ON i.encounter_id = e.id",
+		"ea.attempt_id = 'A21' AND p.birth_date = '1971-01-01' AND e.chief_complaint LIKE '海外出張%' AND i.raw_text LIKE '%フライトは 12 時間%' AND i.lab_results LIKE '%SpO2 92%'", 1)
+	assertWhereCount(t, db, "experiment_attempts ea JOIN patients p ON p.id = ea.patient_id JOIN encounters e ON e.id = ea.encounter_id JOIN interview_notes i ON i.encounter_id = e.id",
+		"ea.attempt_id = 'A23' AND p.birth_date = '1951-01-01' AND e.chief_complaint LIKE '1 週間前からの徐々に悪化する労作時息切れ%' AND i.raw_text LIKE '%紹介状ありがとうございます%' AND i.lab_results LIKE '%SpO2 91%'", 1)
 }
 
 func runTestMigrations(db *sql.DB) error {
