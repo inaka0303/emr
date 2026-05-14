@@ -20,3 +20,8 @@ node_modules/
 
 # Build artifacts
 /tmp/
+
+# Local experiment exports
+exports/
+experiment_results_*.xlsx
+experiment_scores_*.xlsx
