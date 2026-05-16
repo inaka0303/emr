@@ -100,6 +100,7 @@ def latest_results(conn: sqlite3.Connection) -> list[dict[str, Any]]:
           ea.started_at,
           ea.ended_at,
           ea.duration_sec,
+          ea.notes AS attempt_notes,
           ea.interruption_sec,
           ea.ai_wait_ms,
           ea.ai_candidate_count,
