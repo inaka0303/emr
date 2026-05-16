@@ -677,6 +677,33 @@ def summarize_by_keys(rows: list[dict[str, Any]], group_keys: list[str]) -> list
     return summary
 
 
+def attempt_overview(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    fields = [
+        "attempt_id",
+        "subject_id",
+        "sequence_order",
+        "case_id",
+        "source_case_id",
+        "docs_no",
+        "intervention",
+        "status",
+        "score_status",
+        "duration_sec",
+        "composite_score",
+        "rouge_l",
+        "bertscore_f1",
+        "drug_f1",
+        "drug_mention_f1",
+        "diagnosis_f1",
+        "diagnosis_union_f1",
+        "vitals_match_rate",
+        "missing_drug_pairs",
+        "missing_provisional_diagnoses",
+        "missing_score_items",
+    ]
+    return [{field: row.get(field) for field in fields} for row in rows]
+
+
 def tokenizer_status() -> str:
     try:
         import fugashi
@@ -778,11 +805,13 @@ def main() -> None:
 
     environment_rows = collect_scoring_environment(args, scores)
     sheets = {
+        "attempt_overview": attempt_overview(scores),
         "scores": scores,
         "summary_by_intervention": summarize(scores, "intervention"),
         "summary_by_case": summarize(scores, "case_id"),
         "summary_by_subject": summarize(scores, "subject_id"),
         "summary_subject_x_intervention": summarize_by_keys(scores, ["subject_id", "intervention"]),
+        "summary_case_x_intervention": summarize_by_keys(scores, ["case_id", "intervention"]),
         "scoring_environment": environment_rows,
     }
     export_results.write_xlsx(args.output, sheets)
