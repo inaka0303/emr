@@ -3,11 +3,11 @@ set -euo pipefail
 
 DB_PATH="${1:-/tmp/emr-exp-run/ehr-demo.db}"
 EXPORT_DIR="${EXPORT_DIR:-/home/junkanki/naka/emr/exports}"
-REFERENCE_PATH="${REFERENCE_PATH:-/data2/junkanki/naka/exports/experiment_references.jsonl}"
 
 mkdir -p "$EXPORT_DIR"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REFERENCE_PATH="${REFERENCE_PATH:-$SCRIPT_DIR/../references/experiment_references.jsonl}"
 
 if [[ ! -f "$REFERENCE_PATH" ]]; then
   "$SCRIPT_DIR/build_experiment_references.py" --output "$REFERENCE_PATH"

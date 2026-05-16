@@ -18,6 +18,7 @@ from typing import Any
 
 
 DOC_EXPORT_URL = "https://docs.google.com/document/d/1zGrQEbcB4wxUiLyTpjpUCQd7WoQqxlfIXuk3Ogdm2SM/export?format=txt"
+DEFAULT_OUTPUT = Path(__file__).resolve().parent.parent / "references" / "experiment_references.jsonl"
 
 CASE_MAP = {
     "JC-AMI-A": {"case_id": "C1", "docs_no": 9},
@@ -41,6 +42,15 @@ def read_doc_text(path_or_url: str) -> str:
 def normalize_text(s: str) -> str:
     s = s.replace("\r\n", "\n").replace("\r", "\n")
     s = s.replace("\ufeff", "")
+    return s
+
+
+def strip_google_doc_comment_artifacts(s: str) -> str:
+    # Google Docs txt export keeps inline comment markers like "[a]" and appends
+    # comment bodies at the end of the document. These are review metadata, not
+    # part of the clinical reference.
+    s = re.sub(r"(?m)^\[[a-z]+\].*$", "", s)
+    s = re.sub(r"\[[a-z]+\]", "", s)
     return s
 
 
@@ -117,6 +127,7 @@ def extract_bullet_value(text: str, labels: list[str]) -> str:
 
 def split_items(value: str) -> list[str]:
     value = re.sub(r"\n\s*→[\s\S]*$", "", value).strip()
+    value = strip_google_doc_comment_artifacts(value)
     value = re.sub(r"\s+", " ", value)
     if not value:
         return []
@@ -143,6 +154,7 @@ def parse_vitals(text: str) -> dict[str, Any]:
 
 
 def parse_keyfacts(text: str) -> dict[str, Any]:
+    text = strip_google_doc_comment_artifacts(text).strip()
     return {
         "diagnoses": split_items(extract_bullet_value(text, ["確定診断"])),
         "diagnoses_provisional": split_items(extract_bullet_value(text, ["暫定診断", "本日初診"])),
@@ -153,6 +165,35 @@ def parse_keyfacts(text: str) -> dict[str, Any]:
         "vitals": parse_vitals(text),
         "raw_key_facts_text": text,
     }
+
+
+def apply_specialist_review_fixes(row: dict[str, Any]) -> None:
+    """Apply accepted specialist comments that are not yet edited in the doc.
+
+    2026-05-14, JC-AMI-A:
+    Amlodipine has no cardioprotective benefit in AMI, and BP often falls after
+    MI if cardiac function drops. The reviewer recommended holding it once and
+    judging later based on the clinical course.
+    """
+    if row.get("source_case_id") != "JC-AMI-A":
+        return
+
+    key_facts = row.get("key_facts") or {}
+    key_facts["medications_to_continue"] = [
+        "テルミサルタン 40mg/日 (PCI 後の二次予防として、血圧・腎機能・K をみて継続/再開判断)",
+    ]
+    key_facts["medications_to_stop"] = [
+        "アムロジピン 5mg/日 (AMI 急性期は一旦中止し、血圧・心機能の経過をみて再開判断)",
+    ]
+    key_facts["raw_key_facts_text"] = re.sub(
+        r"(?m)^([・·]\s*継続薬\s*[:：]).*$",
+        r"\1 テルミサルタン 40mg/日 (PCI 後の二次予防として、血圧・腎機能・K をみて継続/再開判断)   → 薬剤 F1 (継続)",
+        key_facts.get("raw_key_facts_text") or "",
+    )
+    key_facts["raw_key_facts_text"] += (
+        "\n·       中止薬: アムロジピン 5mg/日 "
+        "(AMI 急性期は一旦中止し、血圧・心機能の経過をみて再開判断)   → 薬剤 F1 (中止)"
+    )
 
 
 def build_references(text: str) -> list[dict[str, Any]]:
@@ -167,16 +208,16 @@ def build_references(text: str) -> list[dict[str, Any]]:
         section = sections[source_case_id]
         first_line = section.splitlines()[0] if section.splitlines() else source_case_id
         keyfacts_text = extract_keyfacts_text(section)
-        rows.append(
-            {
-                "case_id": meta["case_id"],
-                "source_case_id": source_case_id,
-                "docs_no": meta["docs_no"],
-                "title": first_line.strip(),
-                "reference_soap": extract_reference_soap(section),
-                "key_facts": parse_keyfacts(keyfacts_text),
-            }
-        )
+        row = {
+            "case_id": meta["case_id"],
+            "source_case_id": source_case_id,
+            "docs_no": meta["docs_no"],
+            "title": first_line.strip(),
+            "reference_soap": extract_reference_soap(section),
+            "key_facts": parse_keyfacts(keyfacts_text),
+        }
+        apply_specialist_review_fixes(row)
+        rows.append(row)
     return sorted(rows, key=lambda r: r["case_id"])
 
 
@@ -186,7 +227,7 @@ def main() -> None:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("/data2/junkanki/naka/exports/experiment_references.jsonl"),
+        default=DEFAULT_OUTPUT,
     )
     args = parser.parse_args()
 

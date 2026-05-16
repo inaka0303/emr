@@ -22,7 +22,7 @@ import export_experiment_results as export_results
 SCRIPT_DIR = Path(__file__).resolve().parent
 NAKA_ROOT = SCRIPT_DIR.parents[1]
 EVAL_DIR = NAKA_ROOT / "data" / "aci_jp_cardio" / "admission" / "eval_runner"
-DEFAULT_REFERENCES = Path("/data2/junkanki/naka/exports/experiment_references.jsonl")
+DEFAULT_REFERENCES = SCRIPT_DIR.parent / "references" / "experiment_references.jsonl"
 
 sys.path.insert(0, str(EVAL_DIR))
 
