@@ -41,3 +41,16 @@ scripts/merge_judge_results.py
 
 The merged workbook is written to
 `exports/experiment_scores_with_judge_current.xlsx`.
+
+Text metric environment:
+
+```bash
+python3 -m pip install --user -r requirements-scoring.txt
+scripts/export_current_experiment.sh
+```
+
+`export_current_experiment.sh` runs `score_experiment_results.py` with
+`--with-bertscore --strict-text-deps`. The score workbook contains a
+`scoring_environment` sheet, and the same metadata is written to
+`exports/scoring_environment_current.json`. This records the ROUGE tokenizer,
+BERTScore model, device, Python version, and package versions used for the run.

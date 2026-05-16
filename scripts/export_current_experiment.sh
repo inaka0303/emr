@@ -23,7 +23,10 @@ fi
 "$SCRIPT_DIR/score_experiment_results.py" \
   --db "$DB_PATH" \
   --references "$REFERENCE_PATH" \
-  --output "$EXPORT_DIR/experiment_scores_current.xlsx"
+  --output "$EXPORT_DIR/experiment_scores_current.xlsx" \
+  --with-bertscore \
+  --strict-text-deps \
+  --environment-json "$EXPORT_DIR/scoring_environment_current.json"
 
 "$SCRIPT_DIR/build_judge_prompts.py" \
   --db "$DB_PATH" \
@@ -39,6 +42,7 @@ fi
 
 echo "$EXPORT_DIR/experiment_results_current.xlsx"
 echo "$EXPORT_DIR/experiment_scores_current.xlsx"
+echo "$EXPORT_DIR/scoring_environment_current.json"
 echo "$EXPORT_DIR/judge_prompts_current.jsonl"
 if [[ -f "$EXPORT_DIR/experiment_scores_with_judge_current.xlsx" ]]; then
   echo "$EXPORT_DIR/experiment_scores_with_judge_current.xlsx"

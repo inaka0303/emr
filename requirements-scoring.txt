@@ -1,0 +1,7 @@
+# Fixed metric dependencies for the ACI-JP-Cardio human experiment scoring run.
+# Checked against PyPI on 2026-05-16.
+rouge-score==0.1.2
+fugashi==1.5.2
+unidic-lite==1.0.8
+bert-score==0.3.13
+

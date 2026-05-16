@@ -10,7 +10,10 @@ reference JSONL should be built from the Google Doc with
 from __future__ import annotations
 
 import argparse
+import importlib
+import importlib.metadata as metadata
 import json
+import platform
 import re
 import sys
 from datetime import datetime
@@ -28,9 +31,12 @@ DEFAULT_REFERENCES = SCRIPT_DIR.parent / "references" / "experiment_references.j
 sys.path.insert(0, str(EVAL_DIR))
 
 from metrics_drug import DRUG_SYNONYMS, extract_drugs  # noqa: E402
-from metrics_text import compute_text_metrics, tokenize_ja  # noqa: E402
+from metrics_text import compute_rouge_l, tokenize_ja  # noqa: E402
 from metrics_vitals import compute_vitals_match  # noqa: E402
 
+
+DEFAULT_BERTSCORE_MODEL = "cl-tohoku/bert-base-japanese-v3"
+DEFAULT_BERTSCORE_NUM_LAYERS = 9
 
 DRUG_CATEGORY_FIELDS = {
     "start": "medications_to_start",
@@ -381,19 +387,129 @@ def rouge_l_fallback(generated: str, reference: str) -> float:
     return round(2 * precision * recall / (precision + recall), 4)
 
 
-def compute_text_metrics_safe(generated: str, reference: str, with_bertscore: bool) -> dict[str, Any]:
+def module_version(module_name: str, package_name: str | None = None) -> str:
     try:
-        return compute_text_metrics(generated, reference, skip_bertscore=not with_bertscore)
+        importlib.import_module(module_name)
+    except Exception as exc:
+        return f"missing ({type(exc).__name__}: {exc})"
+    try:
+        return metadata.version(package_name or module_name)
+    except metadata.PackageNotFoundError:
+        return "importable/version unknown"
+
+
+def require_text_dependencies(with_bertscore: bool) -> None:
+    required = [
+        ("rouge_score", "rouge-score"),
+        ("fugashi", "fugashi"),
+        ("unidic_lite", "unidic-lite"),
+    ]
+    if with_bertscore:
+        required.extend(
+            [
+                ("bert_score", "bert-score"),
+                ("torch", "torch"),
+                ("transformers", "transformers"),
+            ]
+        )
+
+    missing: list[str] = []
+    for module_name, package_name in required:
+        try:
+            importlib.import_module(module_name)
+        except Exception as exc:
+            missing.append(f"{package_name} ({module_name}): {exc}")
+
+    try:
+        import fugashi
+
+        _ = fugashi.Tagger()
+    except Exception as exc:
+        missing.append(f"fugashi tokenizer initialization: {exc}")
+
+    if missing:
+        raise SystemExit(
+            "Required text metric dependencies are missing:\n"
+            + "\n".join(f"- {item}" for item in missing)
+            + "\nInstall with: python3 -m pip install --user -r requirements-scoring.txt"
+        )
+
+
+def bertscore_device() -> str:
+    try:
+        import torch
+
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        return "cpu"
+
+
+_BERTSCORER = None
+_BERTSCORER_CONFIG: tuple[str, int, str] | None = None
+
+
+def compute_bertscore_cached(generated: str, reference: str, model_type: str, num_layers: int) -> float | None:
+    if not generated or not reference:
+        return 0.0
+
+    global _BERTSCORER, _BERTSCORER_CONFIG
+    device = bertscore_device()
+    config = (model_type, num_layers, device)
+    if _BERTSCORER is None or _BERTSCORER_CONFIG != config:
+        from bert_score import BERTScorer
+
+        _BERTSCORER = BERTScorer(
+            model_type=model_type,
+            num_layers=num_layers,
+            device=device,
+            batch_size=1,
+            rescale_with_baseline=False,
+        )
+        _BERTSCORER_CONFIG = config
+
+    _, _, f1 = _BERTSCORER.score([generated], [reference])
+    return round(f1.item(), 4)
+
+
+def compute_text_metrics_safe(
+    generated: str,
+    reference: str,
+    with_bertscore: bool,
+    bertscore_model: str,
+    bertscore_num_layers: int,
+    strict_text_deps: bool,
+) -> dict[str, Any]:
+    out: dict[str, Any]
+    try:
+        out = {"rouge_l": compute_rouge_l(generated, reference)}
     except ModuleNotFoundError as exc:
         if exc.name != "rouge_score":
             raise
-        return {
+        out = {
             "rouge_l": rouge_l_fallback(generated, reference),
             "text_metric_note": "rouge_score package unavailable; used local ROUGE-L fallback",
         }
 
+    if with_bertscore:
+        try:
+            bs = compute_bertscore_cached(generated, reference, bertscore_model, bertscore_num_layers)
+            if bs is not None:
+                out["bertscore_f1"] = bs
+        except Exception as exc:
+            if strict_text_deps:
+                raise
+            out["bertscore_note"] = f"BERTScore failed: {type(exc).__name__}: {exc}"
+    return out
 
-def score_attempt(row: dict[str, Any], ref: dict[str, Any] | None, with_bertscore: bool) -> dict[str, Any]:
+
+def score_attempt(
+    row: dict[str, Any],
+    ref: dict[str, Any] | None,
+    with_bertscore: bool,
+    bertscore_model: str,
+    bertscore_num_layers: int,
+    strict_text_deps: bool,
+) -> dict[str, Any]:
     out: dict[str, Any] = {
         "attempt_id": row.get("attempt_id"),
         "subject_id": row.get("subject_id"),
@@ -425,7 +541,14 @@ def score_attempt(row: dict[str, Any], ref: dict[str, Any] | None, with_bertscor
     ref_full = reference_full_text(ref)
     key_facts = ref.get("key_facts") or {}
 
-    text_metrics = compute_text_metrics_safe(gen_full, ref_full, with_bertscore=with_bertscore)
+    text_metrics = compute_text_metrics_safe(
+        gen_full,
+        ref_full,
+        with_bertscore=with_bertscore,
+        bertscore_model=bertscore_model,
+        bertscore_num_layers=bertscore_num_layers,
+        strict_text_deps=strict_text_deps,
+    )
     drug_metrics = compute_drug_metrics(gen_full, key_facts)
     drug = drug_metrics["action"]
     drug_mention = drug_metrics["mention"]
@@ -483,6 +606,7 @@ def score_attempt(row: dict[str, Any], ref: dict[str, Any] | None, with_bertscor
             "predicted_diagnoses": ", ".join(diagnosis_metrics.get("predicted_terms") or []),
             "vitals_details_json": compact_json(vitals.get("details") or {}),
             "text_metric_note": text_metrics.get("text_metric_note"),
+            "bertscore_note": text_metrics.get("bertscore_note"),
             "reference_key_facts_json": compact_json(key_facts),
             "generated_soap": gen_full,
             "reference_soap": ref_full,
@@ -506,6 +630,7 @@ def summarize(rows: list[dict[str, Any]], group_key: str) -> list[dict[str, Any]
                 "duration_sec": average([m.get("duration_sec") for m in scored]),
                 "composite_score": average([m.get("composite_score") for m in scored]),
                 "rouge_l": average([m.get("rouge_l") for m in scored]),
+                "bertscore_f1": average([m.get("bertscore_f1") for m in scored]),
                 "drug_f1": average([m.get("drug_f1") for m in scored]),
                 "drug_mention_f1": average([m.get("drug_mention_f1") for m in scored]),
                 "drug_start_f1": average([m.get("drug_start_f1") for m in scored]),
@@ -539,6 +664,7 @@ def summarize_by_keys(rows: list[dict[str, Any]], group_keys: list[str]) -> list
                 "scored": len(scored),
                 "composite_score": average([m.get("composite_score") for m in scored]),
                 "rouge_l": average([m.get("rouge_l") for m in scored]),
+                "bertscore_f1": average([m.get("bertscore_f1") for m in scored]),
                 "drug_f1": average([m.get("drug_f1") for m in scored]),
                 "drug_mention_f1": average([m.get("drug_mention_f1") for m in scored]),
                 "diagnosis_f1": average([m.get("diagnosis_f1") for m in scored]),
@@ -549,6 +675,53 @@ def summarize_by_keys(rows: list[dict[str, Any]], group_keys: list[str]) -> list
         )
         summary.append(out)
     return summary
+
+
+def tokenizer_status() -> str:
+    try:
+        import fugashi
+
+        tagger = fugashi.Tagger()
+        sample = "急性心筋梗塞を疑う"
+        tokens = " / ".join(w.surface for w in tagger(sample))
+        return f"fugashi+unidic-lite ({tokens})"
+    except Exception as exc:
+        return f"char fallback ({type(exc).__name__}: {exc})"
+
+
+def collect_scoring_environment(args: argparse.Namespace, scores: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    env = {
+        "recorded_at": datetime.now().isoformat(timespec="seconds"),
+        "python": sys.version.replace("\n", " "),
+        "python_executable": sys.executable,
+        "platform": platform.platform(),
+        "db_path": str(args.db),
+        "reference_path": str(args.references),
+        "with_bertscore": str(bool(args.with_bertscore)),
+        "strict_text_deps": str(bool(args.strict_text_deps)),
+        "scored_rows": str(sum(1 for row in scores if row.get("score_status") == "scored")),
+        "total_attempt_rows": str(len(scores)),
+        "rouge_implementation": "rouge-score rougeL on fugashi-tokenized Japanese text",
+        "tokenizer": tokenizer_status(),
+        "bertscore_model": args.bertscore_model if args.with_bertscore else "",
+        "bertscore_num_layers": str(args.bertscore_num_layers) if args.with_bertscore else "",
+        "bertscore_device": bertscore_device() if args.with_bertscore else "",
+        "rouge-score": module_version("rouge_score", "rouge-score"),
+        "fugashi": module_version("fugashi", "fugashi"),
+        "unidic-lite": module_version("unidic_lite", "unidic-lite"),
+        "bert-score": module_version("bert_score", "bert-score"),
+        "torch": module_version("torch", "torch"),
+        "transformers": module_version("transformers", "transformers"),
+    }
+    return [{"key": key, "value": value} for key, value in env.items()]
+
+
+def write_environment_json(path: Path, environment_rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({row["key"]: row["value"] for row in environment_rows}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def main() -> None:
@@ -564,30 +737,68 @@ def main() -> None:
     )
     parser.add_argument("--json-output", type=Path, help="Optional JSON copy")
     parser.add_argument("--with-bertscore", action="store_true", help="Also compute BERTScore F1; slower and model-dependent")
+    parser.add_argument(
+        "--strict-text-deps",
+        action="store_true",
+        help="Fail if rouge_score/fugashi/unidic-lite or requested BERTScore dependencies are unavailable",
+    )
+    parser.add_argument("--bertscore-model", default=DEFAULT_BERTSCORE_MODEL, help="Hugging Face model for BERTScore")
+    parser.add_argument("--bertscore-num-layers", type=int, default=DEFAULT_BERTSCORE_NUM_LAYERS)
+    parser.add_argument("--environment-json", type=Path, help="Optional JSON copy of scoring environment")
     args = parser.parse_args()
 
     if not args.references.exists():
         raise SystemExit(f"reference JSONL not found: {args.references}")
+    if args.strict_text_deps:
+        require_text_dependencies(args.with_bertscore)
 
     refs = load_references(args.references)
     with export_results.connect_readonly(args.db) as conn:
         attempts = export_results.latest_results(conn)
 
-    scores = [score_attempt(row, refs.get(row.get("case_id")), args.with_bertscore) for row in attempts]
+    scores = [
+        score_attempt(
+            row,
+            refs.get(row.get("case_id")),
+            args.with_bertscore,
+            args.bertscore_model,
+            args.bertscore_num_layers,
+            args.strict_text_deps,
+        )
+        for row in attempts
+    ]
+    if args.with_bertscore and args.strict_text_deps:
+        missing_bertscore = [
+            str(row.get("attempt_id"))
+            for row in scores
+            if row.get("score_status") == "scored" and row.get("bertscore_f1") is None
+        ]
+        if missing_bertscore:
+            raise SystemExit(f"BERTScore was requested but missing for attempts: {', '.join(missing_bertscore)}")
+
+    environment_rows = collect_scoring_environment(args, scores)
     sheets = {
         "scores": scores,
         "summary_by_intervention": summarize(scores, "intervention"),
         "summary_by_case": summarize(scores, "case_id"),
         "summary_by_subject": summarize(scores, "subject_id"),
         "summary_subject_x_intervention": summarize_by_keys(scores, ["subject_id", "intervention"]),
+        "scoring_environment": environment_rows,
     }
     export_results.write_xlsx(args.output, sheets)
     print(args.output)
 
     if args.json_output:
         args.json_output.parent.mkdir(parents=True, exist_ok=True)
-        args.json_output.write_text(json.dumps({"scores": scores}, ensure_ascii=False, indent=2), encoding="utf-8")
+        args.json_output.write_text(
+            json.dumps({"scores": scores, "scoring_environment": environment_rows}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
         print(args.json_output)
+
+    if args.environment_json:
+        write_environment_json(args.environment_json, environment_rows)
+        print(args.environment_json)
 
     scored = sum(1 for row in scores if row.get("score_status") == "scored")
     print(f"scored {scored}/{len(scores)} saved SOAP notes")
