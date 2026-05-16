@@ -25,5 +25,21 @@ fi
   --references "$REFERENCE_PATH" \
   --output "$EXPORT_DIR/experiment_scores_current.xlsx"
 
+"$SCRIPT_DIR/build_judge_prompts.py" \
+  --db "$DB_PATH" \
+  --references "$REFERENCE_PATH" \
+  --output "$EXPORT_DIR/judge_prompts_current.jsonl"
+
+if [[ -f "$EXPORT_DIR/judge_results_current.jsonl" ]]; then
+  "$SCRIPT_DIR/merge_judge_results.py" \
+    --scores-xlsx "$EXPORT_DIR/experiment_scores_current.xlsx" \
+    --judge-results "$EXPORT_DIR/judge_results_current.jsonl" \
+    --output "$EXPORT_DIR/experiment_scores_with_judge_current.xlsx"
+fi
+
 echo "$EXPORT_DIR/experiment_results_current.xlsx"
 echo "$EXPORT_DIR/experiment_scores_current.xlsx"
+echo "$EXPORT_DIR/judge_prompts_current.jsonl"
+if [[ -f "$EXPORT_DIR/experiment_scores_with_judge_current.xlsx" ]]; then
+  echo "$EXPORT_DIR/experiment_scores_with_judge_current.xlsx"
+fi
