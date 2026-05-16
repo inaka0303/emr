@@ -18,7 +18,7 @@ from typing import Any
 
 
 DOC_EXPORT_URL = "https://docs.google.com/document/d/1zGrQEbcB4wxUiLyTpjpUCQd7WoQqxlfIXuk3Ogdm2SM/export?format=txt"
-DEFAULT_OUTPUT = Path(__file__).resolve().parent.parent / "references" / "experiment_references.jsonl"
+DEFAULT_OUTPUT = Path(__file__).resolve().parent.parent / "references" / "experiment_references.generated.jsonl"
 
 CASE_MAP = {
     "JC-AMI-A": {"case_id": "C1", "docs_no": 9},

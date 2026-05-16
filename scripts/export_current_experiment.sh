@@ -11,7 +11,9 @@ REFERENCE_PATH="${REFERENCE_PATH:-$SCRIPT_DIR/../references/experiment_reference
 
 if [[ ! -f "$REFERENCE_PATH" ]]; then
   "$SCRIPT_DIR/build_experiment_references.py" --output "$REFERENCE_PATH"
+  "$SCRIPT_DIR/curate_experiment_references.py" --input "$REFERENCE_PATH" --output "$REFERENCE_PATH"
 fi
+"$SCRIPT_DIR/validate_experiment_references.py" "$REFERENCE_PATH"
 
 "$SCRIPT_DIR/export_experiment_results.py" \
   --db "$DB_PATH" \
