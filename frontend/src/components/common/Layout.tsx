@@ -54,7 +54,7 @@ function parseDBTime(value?: string): number | null {
 }
 
 export default function Layout() {
-  const experimentAttemptId = useMemo(() => getAttemptIDFromURL(), []);
+  const [experimentAttemptId] = useState(getAttemptIDFromURL);
   const isExperimentMode = experimentAttemptId != null;
   const [experimentAttempt, setExperimentAttempt] = useState<ExperimentAttempt | null>(null);
   const [experimentLoading, setExperimentLoading] = useState(isExperimentMode);
@@ -83,8 +83,7 @@ export default function Layout() {
   useEffect(() => {
     if (!experimentAttemptId) return;
     let cancelled = false;
-    setExperimentLoading(true);
-    setExperimentError(null);
+    // attemptはマウント時に固定され、読み込み状態もuseStateで初期化済み。
     Promise.all([
       get<ApiResponse<ExperimentAttempt>>(`/experiment/attempts/${experimentAttemptId}`),
     ])

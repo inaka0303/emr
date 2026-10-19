@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { suggestAdmissionSummary } from '../../api/slm';
 import { get, post } from '../../api/client';
 
@@ -24,7 +24,12 @@ interface SavedSummary {
  *
  * 備考: admission LoRA は学習データ30件で品質不十分。参考表示用。
  */
-export default function AdmissionSummaryDrafter({
+export default function AdmissionSummaryDrafter(props: AdmissionSummaryDrafterProps) {
+  // 受診・入力が変わったら、その入力に属する編集状態を新しく作る。
+  return <AdmissionSummaryEditor key={JSON.stringify([props.encounterId, props.interviewText])} {...props} />;
+}
+
+function AdmissionSummaryEditor({
   encounterId,
   interviewText,
 }: AdmissionSummaryDrafterProps) {
@@ -36,21 +41,14 @@ export default function AdmissionSummaryDrafter({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
 
-  const fetchedRef = useRef<number | null>(null);
-
   useEffect(() => {
-    setDraftText('');
-    setFinalText('');
-    setMeta(null);
-    setServer(undefined);
-    setErrorMsg(null);
-    setSaveState('idle');
-    fetchedRef.current = null;
-    setStatus('loading-cache');
+    let cancelled = false;
 
-    // まず既存保存を確認
+    // まず既存保存を確認。取得失敗時は従来どおり新規扱いにする。
     get<{ data: SavedSummary | null }>(`/encounters/${encounterId}/admission-summary`)
+      .catch(() => ({ data: null }))
       .then((res) => {
+        if (cancelled) return;
         if (res.data && res.data.content) {
           setFinalText(res.data.content);
           setStatus(res.data.is_slm_draft ? 'accepted' : 'manual');
@@ -61,40 +59,24 @@ export default function AdmissionSummaryDrafter({
           setStatus('manual');
           return;
         }
-        if (fetchedRef.current === encounterId) return;
-        fetchedRef.current = encounterId;
         setStatus('generating');
         return suggestAdmissionSummary(interviewText, encounterId)
           .then((sres) => {
+            if (cancelled) return;
             setDraftText(sres.data.text ?? '');
             setMeta({ latency_ms: sres.meta.latency_ms, is_mock: sres.meta.is_mock });
             setServer(sres.data.server);
             setStatus(sres.data.text ? 'draft' : 'manual');
           })
           .catch((err: unknown) => {
-            setErrorMsg(err instanceof Error ? err.message : 'サマリ生成に失敗しました');
-            setStatus('error');
-          });
-      })
-      .catch(() => {
-        // 取得失敗時は新規扱い
-        if (!interviewText) {
-          setStatus('manual');
-          return;
-        }
-        setStatus('generating');
-        suggestAdmissionSummary(interviewText, encounterId)
-          .then((sres) => {
-            setDraftText(sres.data.text ?? '');
-            setMeta({ latency_ms: sres.meta.latency_ms, is_mock: sres.meta.is_mock });
-            setServer(sres.data.server);
-            setStatus(sres.data.text ? 'draft' : 'manual');
-          })
-          .catch((err: unknown) => {
+            if (cancelled) return;
             setErrorMsg(err instanceof Error ? err.message : 'サマリ生成に失敗しました');
             setStatus('error');
           });
       });
+    return () => {
+      cancelled = true;
+    };
   }, [encounterId, interviewText]);
 
   const accept = () => {

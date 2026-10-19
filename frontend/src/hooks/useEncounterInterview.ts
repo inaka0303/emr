@@ -27,31 +27,35 @@ interface UseEncounterInterviewResult {
 }
 
 export function useEncounterInterview(encounterId: number | null): UseEncounterInterviewResult {
-  const [notes, setNotes] = useState<InterviewNote[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<{
+    encounterId: number | null;
+    notes: InterviewNote[];
+    isLoading: boolean;
+    error: string | null;
+  }>(() => ({ encounterId, notes: [], isLoading: encounterId != null, error: null }));
+
+  // 受診変更を描画前に反映し、別の受診の問診を一瞬表示することも防ぐ。
+  if (result.encounterId !== encounterId) {
+    setResult({ encounterId, notes: [], isLoading: encounterId != null, error: null });
+  }
+  const { notes, isLoading, error } = result;
 
   useEffect(() => {
-    if (encounterId == null) {
-      setNotes([]);
-      setError(null);
-      return;
-    }
+    if (encounterId == null) return;
     let cancelled = false;
-    setIsLoading(true);
-    setError(null);
     get<ApiResponse<InterviewNote[]>>(`/encounters/${encounterId}/interviews`)
       .then((res) => {
         if (cancelled) return;
-        setNotes(res.data ?? []);
+        setResult({ encounterId, notes: res.data ?? [], isLoading: false, error: null });
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : '問診の取得に失敗しました');
-        setNotes([]);
-      })
-      .finally(() => {
-        if (!cancelled) setIsLoading(false);
+        setResult({
+          encounterId,
+          notes: [],
+          isLoading: false,
+          error: err instanceof Error ? err.message : '問診の取得に失敗しました',
+        });
       });
     return () => {
       cancelled = true;

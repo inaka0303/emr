@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { post, put } from '../../api/client';
 import InlineCompletionTextarea from '../slm/InlineCompletionTextarea';
 import RAGEvidencePanel from '../slm/RAGEvidencePanel';
@@ -137,7 +137,18 @@ function removeStoredSOAPDraft(key: string | null) {
   }
 }
 
-export default function SOAPEditor({
+export default function SOAPEditor(props: SOAPEditorProps) {
+  // 受診・実験のリセット・保存済み記録の更新ごとに編集状態を初期化する。
+  // 同じ記録のオブジェクトが再取得されただけでは編集中の内容を消さない。
+  const editorKey = JSON.stringify([
+    soapDraftStorageKey(props.encounterId, props.experimentAttemptId, props.draftStorageVersion),
+    props.existingSOAPNote?.id ?? null,
+    props.existingSOAPNote?.updated_at ?? null,
+  ]);
+  return <SOAPEditorForm key={editorKey} {...props} />;
+}
+
+function SOAPEditorForm({
   patientName,
   encounterId,
   patientId,
@@ -151,107 +162,44 @@ export default function SOAPEditor({
   existingSOAPNote = null,
   draftEntry = null,
 }: SOAPEditorProps) {
-  const [data, setData] = useState<SOAPData>(emptySOAPData);
-  const [draftText, setDraftText] = useState<SOAPData>(emptySOAPData);
-  const [statuses, setStatuses] = useState<StatusMap>(initialStatus);
-  const [draftError, setDraftError] = useState<string | null>(null);
-  const [draftMeta, setDraftMeta] = useState<{ latency_ms?: number; is_mock?: boolean } | null>(null);
-  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
-  const [savedNoteId, setSavedNoteId] = useState<number | null>(null);
-  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
-  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const draftStorageKey = soapDraftStorageKey(encounterId, experimentAttemptId, draftStorageVersion);
+  const [storedDraft] = useState(() => draftStorageKey ? readStoredSOAPDraft(draftStorageKey) : null);
+  const [data, setData] = useState<SOAPData>(
+    () => storedDraft ?? (existingSOAPNote ? fromSOAPNote(existingSOAPNote) : emptySOAPData),
+  );
+  // ユーザーが採用・却下・編集した状態だけを保持し、生成状態はpropsから導出する。
+  const [sectionStatuses, setStatuses] = useState<StatusMap>(() => {
+    const statuses = { ...initialStatus };
+    for (const { key } of SECTIONS) {
+      if (storedDraft?.[key]) statuses[key] = 'manual';
+    }
+    return statuses;
+  });
+  const activeDraft = aiEnabled && !hasExistingSOAP && draftEntry?.encounterId === encounterId ? draftEntry : null;
+  const draftText = activeDraft?.suggestion ?? emptySOAPData;
+  const draftError = activeDraft?.error ?? null;
+  const draftMeta = activeDraft?.meta ?? null;
+  const statuses = useMemo(() => {
+    const next = { ...sectionStatuses };
+    for (const { key } of SECTIONS) {
+      if (next[key] === 'accepted' || next[key] === 'manual' || !activeDraft) continue;
+      next[key] = activeDraft.error ? 'manual' : activeDraft.suggestion?.[key] ? 'draft' : activeDraft.done ? 'manual' : 'generating';
+    }
+    return next;
+  }, [activeDraft, sectionStatuses]);
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>(
+    () => existingSOAPNote && storedDraft == null ? 'success' : 'idle',
+  );
+  const [savedNoteId, setSavedNoteId] = useState<number | null>(() => existingSOAPNote?.id ?? null);
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(() => parseSavedAt(existingSOAPNote));
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(storedDraft != null);
   const [errorMessage, setErrorMessage] = useState('');
   const [editedDraftSections, setEditedDraftSections] = useState<Set<SectionKey>>(new Set());
-  const draftStorageKey = useMemo(
-    () => soapDraftStorageKey(encounterId, experimentAttemptId, draftStorageVersion),
-    [encounterId, experimentAttemptId, draftStorageVersion],
-  );
-  const skipNextPersistRef = useRef(false);
 
-  // encounter変更時、前回の状態をリセット
+  // 保存済みの記録は退避せず、未保存の入力だけを受診ごとのキーで保存する。
   useEffect(() => {
-    skipNextPersistRef.current = true;
-    const stored = draftStorageKey ? readStoredSOAPDraft(draftStorageKey) : null;
-    const existingData = existingSOAPNote ? fromSOAPNote(existingSOAPNote) : null;
-    setData(stored ?? existingData ?? emptySOAPData);
-    setDraftText(emptySOAPData);
-    setStatuses(initialStatus);
-    setDraftError(null);
-    setDraftMeta(null);
-    setSavedNoteId(existingSOAPNote?.id ?? null);
-    setLastSavedAt(parseSavedAt(existingSOAPNote));
-    setHasUnsavedChanges(stored != null);
-    setSaveStatus(existingSOAPNote && stored == null ? 'success' : 'idle');
-    setErrorMessage('');
-    setEditedDraftSections(new Set());
-  }, [draftStorageKey, existingSOAPNote?.id, existingSOAPNote?.updated_at]);
-
-  // 保存ボタン前の入力をブラウザに退避し、誤リロードでも復元できるようにする。
-  useEffect(() => {
-    if (!draftStorageKey) return;
-    if (skipNextPersistRef.current) {
-      skipNextPersistRef.current = false;
-      return;
-    }
-    writeStoredSOAPDraft(draftStorageKey, data);
-  }, [data, draftStorageKey]);
-
-  // 親から渡される draftEntry を反映（SSE で逐次到着するセクションに追従）
-  //
-  // 方針: accepted / manual 状態のセクションは「ユーザーの編集物」なのでストリーム更新で上書きしない。
-  // generating / idle / draft はまだ SLM 管轄なので、到着したテキストで更新する。
-  useEffect(() => {
-    if (encounterId == null) return;
-    if (!aiEnabled) return;
-    if (hasExistingSOAP) return;
-    if (!draftEntry) return;
-    if (draftEntry.encounterId !== encounterId) return;
-
-    if (draftEntry.error) {
-      setDraftError(draftEntry.error);
-      setStatuses((prev) => ({
-        subjective: prev.subjective === 'accepted' || prev.subjective === 'manual' ? prev.subjective : 'manual',
-        objective: prev.objective === 'accepted' || prev.objective === 'manual' ? prev.objective : 'manual',
-        assessment: prev.assessment === 'accepted' || prev.assessment === 'manual' ? prev.assessment : 'manual',
-        plan: prev.plan === 'accepted' || prev.plan === 'manual' ? prev.plan : 'manual',
-      }));
-      return;
-    }
-
-    const s = draftEntry.suggestion ?? { subjective: '', objective: '', assessment: '', plan: '' };
-
-    setDraftText((prev) => ({
-      subjective: s.subjective || prev.subjective,
-      objective: s.objective || prev.objective,
-      assessment: s.assessment || prev.assessment,
-      plan: s.plan || prev.plan,
-    }));
-
-    // 各セクションの状態を更新
-    // - accepted / manual: ユーザー操作済みなので触らない
-    // - それ以外: テキストがあれば 'draft'、なければ 'generating'（完了後は 'manual'）
-    const isDone = draftEntry.done;
-    setStatuses((prev) => {
-      const keys: SectionKey[] = ['subjective', 'objective', 'assessment', 'plan'];
-      const next = { ...prev };
-      for (const key of keys) {
-        if (prev[key] === 'accepted' || prev[key] === 'manual') continue;
-        const text = s[key];
-        if (text) {
-          next[key] = 'draft';
-        } else if (isDone) {
-          next[key] = 'manual';
-        } else {
-          next[key] = 'generating';
-        }
-      }
-      return next;
-    });
-
-    if (draftEntry.meta) {
-      setDraftMeta(draftEntry.meta);
-    }
-  }, [encounterId, aiEnabled, hasExistingSOAP, draftEntry]);
+    if (draftStorageKey && hasUnsavedChanges) writeStoredSOAPDraft(draftStorageKey, data);
+  }, [data, draftStorageKey, hasUnsavedChanges]);
 
   const markUnsaved = useCallback(() => {
     setHasUnsavedChanges(true);
@@ -268,6 +216,7 @@ export default function SOAPEditor({
       onExperimentEvent?.('ai_draft_edited', { section: key });
     }
     setData((prev) => ({ ...prev, [key]: value }));
+    setStatuses((prev) => ({ ...prev, [key]: prev[key] === 'accepted' ? 'accepted' : 'manual' }));
     markUnsaved();
   }, [aiEnabled, editedDraftSections, markUnsaved, onExperimentEvent, statuses]);
 
@@ -281,10 +230,10 @@ export default function SOAPEditor({
       plan: statuses.plan === 'draft' ? draftText.plan : prev.plan,
     }));
     setStatuses((prev) => ({
-      subjective: prev.subjective === 'draft' ? 'accepted' : prev.subjective,
-      objective: prev.objective === 'draft' ? 'accepted' : prev.objective,
-      assessment: prev.assessment === 'draft' ? 'accepted' : prev.assessment,
-      plan: prev.plan === 'draft' ? 'accepted' : prev.plan,
+      subjective: statuses.subjective === 'draft' ? 'accepted' : prev.subjective,
+      objective: statuses.objective === 'draft' ? 'accepted' : prev.objective,
+      assessment: statuses.assessment === 'draft' ? 'accepted' : prev.assessment,
+      plan: statuses.plan === 'draft' ? 'accepted' : prev.plan,
     }));
     if (acceptedSections.length > 0) {
       markUnsaved();
@@ -301,7 +250,6 @@ export default function SOAPEditor({
 
   const rejectSection = useCallback((key: SectionKey) => {
     setData((prev) => ({ ...prev, [key]: '' }));
-    setDraftText((prev) => ({ ...prev, [key]: '' }));
     setStatuses((prev) => ({ ...prev, [key]: 'manual' }));
     markUnsaved();
     onExperimentEvent?.('ai_draft_rejected', { section: key, count: 1 });
